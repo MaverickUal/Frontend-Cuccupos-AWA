@@ -43,12 +43,22 @@ export const RANGE_OPTIONS: { value: RangePreset; label: string }[] = [
   { value: "custom", label: "Custom range" },
 ]
 
-/** Parse a `yyyy-mm-dd` input value as a *local* date (not UTC midnight). */
+/**
+ * Parse a `yyyy-mm-dd` input value as a *local* date (not UTC midnight).
+ *
+ * Rejects impossible dates instead of letting JS roll them over: `new Date(2026, 1, 31)`
+ * silently becomes 3 Mar, which would apply the wrong day with no error shown.
+ */
 export function parseDayInput(value: string): Date | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim())
   if (!m) return null
-  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-  return Number.isNaN(d.getTime()) ? null : d
+  const y = Number(m[1])
+  const mo = Number(m[2]) - 1
+  const d = Number(m[3])
+  const date = new Date(y, mo, d)
+  // Round-trip check catches overflow like Feb 31 -> Mar 3.
+  if (date.getFullYear() !== y || date.getMonth() !== mo || date.getDate() !== d) return null
+  return date
 }
 
 export const toDayInput = (d: Date) =>
@@ -87,11 +97,45 @@ export function resolveRange(preset: RangePreset, fromRaw?: string, toRaw?: stri
   }
 }
 
+/**
+ * Orders whose creation time falls inside the range.
+ *
+ * The lower bound is inclusive, which is what makes a single-day custom range
+ * actually include that day. Orders with a missing or unparseable `createdAt`
+ * are dropped rather than silently landing at epoch 0.
+ */
 export const inRange = (orders: Order[], range: DateRange) =>
   orders.filter((o) => {
-    const t = new Date(o.createdAt)
-    return t >= range.from && t <= range.to
+    const t = timeOf(o)
+    return t !== null && t >= range.from.getTime() && t <= range.to.getTime()
   })
+
+/**
+ * Epoch millis for an order's creation time, or null when it is missing/invalid.
+ *
+ * Comparisons go through this rather than string comparison of the ISO text, so
+ * a hand-edited or oddly-formatted timestamp can't sort or filter incorrectly.
+ */
+export function timeOf(o: { createdAt?: string | Date | null }): number | null {
+  if (o.createdAt === null || o.createdAt === undefined) return null
+  const t = o.createdAt instanceof Date ? o.createdAt.getTime() : Date.parse(String(o.createdAt))
+  return Number.isFinite(t) ? t : null
+}
+
+/**
+ * Newest first. Orders with no usable timestamp sink to the bottom instead of
+ * jumping to 1970 and displacing real history.
+ */
+export function sortByCreatedAtDesc<T extends { createdAt?: string | Date | null }>(orders: T[]): T[] {
+  return [...orders].sort((a, b) => {
+    const ta = timeOf(a)
+    const tb = timeOf(b)
+    if (ta === null && tb === null) return 0
+    if (ta === null) return 1
+    if (tb === null) return -1
+    return tb - ta
+  })
+}
 
 export interface Point {
   label: string
@@ -119,9 +163,11 @@ export function seriesFor(orders: Order[], range: DateRange): Point[] {
       from.setHours(h, 0, 0, 0)
       const to = new Date(from)
       to.setHours(h + 1, 0, 0, 0)
+      // Half-open [from, to): an order at exactly 09:00:00 belongs to the 9am
+      // bucket, not the 8am one.
       const bucket = valid.filter((o) => {
-        const t = new Date(o.createdAt)
-        return t >= from && t < to
+        const t = timeOf(o)
+        return t !== null && t >= from.getTime() && t < to.getTime()
       })
       out.push({
         label: from
@@ -142,9 +188,11 @@ export function seriesFor(orders: Order[], range: DateRange): Point[] {
   while (cursor <= last) {
     const from = new Date(cursor)
     const to = addDays(from, 1)
+    // Half-open [from, to) so a midnight order lands in its own day exactly once,
+    // never in both the previous day and this one.
     const bucket = valid.filter((o) => {
-      const t = new Date(o.createdAt)
-      return t >= from && t < to
+      const t = timeOf(o)
+      return t !== null && t >= from.getTime() && t < to.getTime()
     })
     out.push({
       label: fmtShort(from),

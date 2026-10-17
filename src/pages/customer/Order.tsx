@@ -10,8 +10,10 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { MenuImage } from "@/components/MenuImage"
 import { QuantityStepper } from "@/components/QuantityStepper"
+import { DiscountPicker } from "@/components/DiscountPicker"
 import { useStore } from "@/store/AppStore"
 import { orderNo, peso } from "@/lib/format"
+import { changeFor, type DiscountType } from "@/lib/discounts"
 import { cn } from "@/lib/utils"
 import type { Category, Order } from "@/types"
 
@@ -23,17 +25,10 @@ const QUICK_TENDER = [20, 50, 100, 200, 500, 1000]
 const money = (n: number) => Math.round(n * 100) / 100
 
 interface Tender {
-  /** Raw input text, so the field can be empty or mid-typing. */
   raw: string
   amount: number
   change: number
-  /** Enough cash to cover the bill? */
   sufficient: boolean
-}
-
-function useTender(raw: string, total: number): Tender {
-  const amount = money(parseFloat(raw) || 0)
-  return { raw, amount, change: money(amount - total), sufficient: amount >= total && amount > 0 }
 }
 
 function CashTendered({
@@ -78,28 +73,64 @@ function CashTendered({
   )
 }
 
-function ChangeRow({ tender, total }: { tender: Tender; total: number }) {
-  const short = !tender.sufficient
+/** Subtotal → discount → payable. Shown wherever a total appears at checkout. */
+function MoneySummary({
+  breakdown,
+  change,
+  sufficient,
+}: {
+  breakdown: { subtotal: number; discountAmount?: number; amount: number; total: number; type: DiscountType }
+  change: number
+  sufficient: boolean
+}) {
   return (
-    <div className="flex items-center justify-between text-lg font-bold">
-      <span>Change</span>
-      <span className={cn("tabular-nums", short && "text-destructive")}>
-        {short ? `Short by ${peso(Math.abs(tender.change))}` : peso(tender.change)}
-      </span>
+    <div className="space-y-1 text-sm">
+      <div className="flex justify-between">
+        <span>Subtotal</span>
+        <span className="tabular-nums">{peso(breakdown.subtotal)}</span>
+      </div>
+      {breakdown.amount > 0 && (
+        <div className="flex justify-between font-semibold text-emerald-700">
+          <span>Discount</span>
+          <span className="tabular-nums">−{peso(breakdown.amount)}</span>
+        </div>
+      )}
+      <div className="flex justify-between border-t pt-1 text-base font-bold">
+        <span>Total</span>
+        <span className="tabular-nums">{peso(breakdown.total)}</span>
+      </div>
+      <div className="flex justify-between text-lg font-bold">
+        <span>Change</span>
+        <span className={cn("tabular-nums", !sufficient && "text-destructive")}>
+          {sufficient ? peso(change) : `Short by ${peso(Math.abs(change))}`}
+        </span>
+      </div>
     </div>
   )
 }
 
 function CartPanel({
-  tender,
+  tenderRaw,
   onTenderChange,
   onCheckout,
+  discountType,
+  onDiscountChange,
 }: {
-  tender: Tender
+  tenderRaw: string
   onTenderChange: (v: string) => void
   onCheckout: () => void
+  discountType: DiscountType
+  onDiscountChange: (t: DiscountType) => void
 }) {
-  const { cartLines, cartTotal, setQty, removeFromCart } = useStore()
+  const { cartLines, setQty, removeFromCart, previewDiscount } = useStore()
+  const breakdown = previewDiscount(discountType)
+  // Derived here rather than passed in, so the panel and the dialog can never
+  // disagree about the change.
+  const tender = useMemo(() => {
+    const amount = money(parseFloat(tenderRaw) || 0)
+    const { change, sufficient } = changeFor(amount, breakdown.total)
+    return { raw: tenderRaw, amount, change, sufficient }
+  }, [tenderRaw, breakdown.total])
   const canCheckout = cartLines.length > 0 && tender.sufficient
   return (
     <Card className="flex max-h-[calc(100vh-11rem)] flex-col p-5 shadow-md">
@@ -131,18 +162,20 @@ function CartPanel({
         ))}
       </div>
       <div className="mt-4 space-y-3 border-t pt-4">
-        <div className="flex items-center justify-between text-muted-foreground">
-          <span>Subtotal</span>
-          <span className="font-bold tabular-nums">{peso(cartTotal)}</span>
-        </div>
-        <div className="flex items-center justify-between text-lg font-bold">
-          <span>Total</span>
-          <span className="tabular-nums">{peso(cartTotal)}</span>
-        </div>
         {cartLines.length > 0 && (
-          <CashTendered tender={tender} onChange={onTenderChange} total={cartTotal} idPrefix="panel" />
+          <DiscountPicker
+            value={discountType}
+            onChange={onDiscountChange}
+            discountAmount={breakdown.amount}
+            idPrefix="panel"
+          />
         )}
-        {cartLines.length > 0 && <ChangeRow tender={tender} total={cartTotal} />}
+        {cartLines.length > 0 && (
+          <MoneySummary breakdown={breakdown} change={tender.change} sufficient={tender.sufficient} />
+        )}
+        {cartLines.length > 0 && (
+          <CashTendered tender={tender} onChange={onTenderChange} total={breakdown.total} idPrefix="panel" />
+        )}
         <Button className="w-full" size="lg" disabled={!canCheckout} onClick={onCheckout}>
           Checkout
         </Button>
@@ -159,19 +192,30 @@ type Phase = "review" | "processing" | "done"
 function CheckoutDialog({
   open,
   onOpenChange,
-  tender,
+  tenderRaw,
   onTenderChange,
+  discountType,
+  onDiscountChange,
 }: {
   open: boolean
   onOpenChange: (o: boolean) => void
-  tender: Tender
+  tenderRaw: string
   onTenderChange: (v: string) => void
+  discountType: DiscountType
+  onDiscountChange: (t: DiscountType) => void
 }) {
-  const { cartLines, cartTotal, placeOrder } = useStore()
+  const { cartLines, previewDiscount, placeOrder } = useStore()
   const navigate = useNavigate()
   const [phase, setPhase] = useState<Phase>("review")
   const [note, setNote] = useState("")
   const [placed, setPlaced] = useState<Order | null>(null)
+
+  const breakdown = previewDiscount(discountType)
+  const tender = useMemo(() => {
+    const amount = money(parseFloat(tenderRaw) || 0)
+    const { change, sufficient } = changeFor(amount, breakdown.total)
+    return { raw: tenderRaw, amount, change, sufficient }
+  }, [tenderRaw, breakdown.total])
 
   useEffect(() => {
     if (open) return
@@ -183,11 +227,11 @@ function CheckoutDialog({
     setPhase("processing")
     // Mock payment delay, then place order via Firebase
     await new Promise((r) => setTimeout(r, 1400))
-    const order = await placeOrder(tender.amount, note.trim() || undefined)
+    const order = await placeOrder(tender.amount, note.trim() || undefined, discountType)
     if (order) { setPlaced(order); setPhase("done") } else { setPhase("review"); toast.error("Your order is empty.") }
   }
 
-  const exact = tender.change === 0
+  const exact = tender.sufficient && tender.change === 0
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (phase !== "processing") onOpenChange(o) }}>
@@ -205,7 +249,11 @@ function CheckoutDialog({
             <div className="w-full rounded-xl bg-muted p-3 text-sm">
               {Object.values(placed.items).map((i) => <div key={i.menuItemId} className="flex justify-between py-0.5"><span>{i.qty} × {i.name}</span><span>{peso(i.qty * i.price)}</span></div>)}
               <div className="mt-2 space-y-0.5 border-t pt-2">
-                <div className="flex justify-between"><span>Total</span><span>{peso(placed.total)}</span></div>
+                <div className="flex justify-between"><span>Subtotal</span><span>{peso(placed.subtotal ?? placed.total)}</span></div>
+                {(placed.discountAmount ?? 0) > 0 && (
+                  <div className="flex justify-between"><span>Discount</span><span>−{peso(placed.discountAmount ?? 0)}</span></div>
+                )}
+                <div className="flex justify-between font-bold"><span>Total</span><span>{peso(placed.total)}</span></div>
                 <div className="flex justify-between"><span>Cash tendered</span><span>{peso(placed.cashTendered ?? 0)}</span></div>
                 <div className="flex justify-between font-bold"><span>Change</span><span>{peso(placed.changeGiven ?? 0)}</span></div>
               </div>
@@ -223,22 +271,23 @@ function CheckoutDialog({
             </DialogHeader>
             <div className="space-y-1 rounded-xl bg-muted p-3 text-sm">
               {cartLines.map(({ item, qty }) => <div key={item.id} className="flex justify-between"><span>{qty} × {item.name}</span><span>{peso(qty * item.price)}</span></div>)}
-              <div className="mt-2 flex justify-between border-t pt-2 text-base font-bold"><span>Total</span><span className="tabular-nums">{peso(cartTotal)}</span></div>
             </div>
-            <CashTendered tender={tender} onChange={onTenderChange} total={cartTotal} idPrefix="dialog" />
+            <DiscountPicker
+              value={discountType}
+              onChange={onDiscountChange}
+              discountAmount={breakdown.amount}
+              idPrefix="dialog"
+              disabled={phase === "processing"}
+            />
             <div className="rounded-xl border-2 border-dashed p-3">
-              <div className="flex items-center justify-between text-xl font-bold">
-                <span>Change due</span>
-                <span className={cn("tabular-nums", !tender.sufficient && "text-destructive")}>
-                  {tender.sufficient ? peso(tender.change) : `Short by ${peso(Math.abs(tender.change))}`}
-                </span>
-              </div>
+              <MoneySummary breakdown={breakdown} change={tender.change} sufficient={tender.sufficient} />
               <p className="mt-1 text-center text-xs text-muted-foreground">
                 {tender.sufficient
                   ? exact ? "Exact amount — no change needed." : `Hand ${peso(tender.change)} back to the customer.`
                   : "Cash received does not cover the total yet."}
               </p>
             </div>
+            <CashTendered tender={tender} onChange={onTenderChange} total={breakdown.total} idPrefix="dialog" />
             <div className="space-y-1.5">
               <Label htmlFor="note">Note for the kitchen (optional)</Label>
               <Input id="note" placeholder="Less ice, no sugar…" maxLength={120} value={note} onChange={(e) => setNote(e.target.value)} disabled={phase === "processing"} />
@@ -257,30 +306,30 @@ function CheckoutDialog({
 }
 
 export default function OrderPage() {
-  const { menu, addToCart, cartCount, cartTotal } = useStore()
+  const { menu, addToCart, cartCount } = useStore()
   const [search, setSearch] = useState("")
   const [category, setCategory] = useState<"All" | Category>("All")
   const [tenderRaw, setTenderRaw] = useState("")
+  const [discountType, setDiscountType] = useState<DiscountType>("none")
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [cartOpen, setCartOpen] = useState(false)
-
-  const tender = useTender(tenderRaw, cartTotal)
 
   const items = useMemo(
     () => menu.filter((m) => (category === "All" || m.category === category) && m.name.toLowerCase().includes(search.trim().toLowerCase())),
     [menu, search, category]
   )
 
-  // Reset the tender whenever the cart empties — the store clears the cart after
-  // a successful order, so this wipes the stale amount between sales. Cancelling
-  // the dialog deliberately keeps both the cart and the tender.
+  // Reset the tender and discount whenever the cart empties — the store clears the
+  // cart after a successful order, so this wipes stale values between sales.
+  // Cancelling the dialog deliberately keeps both.
   useEffect(() => {
-    if (cartCount === 0) setTenderRaw("")
+    if (cartCount === 0) {
+      setTenderRaw("")
+      setDiscountType("none")
+    }
   }, [cartCount])
 
-  function startCheckout() {
-    setCheckoutOpen(true)
-  }
+  const cartLinesCount = cartCount
 
   return (
     <div className="flex items-start gap-6">
@@ -329,31 +378,48 @@ export default function OrderPage() {
         )}
       </div>
 
+      {/*
+        The desktop and mobile panels both render a live tender field. They are
+        separate instances so each keeps its own input focus.
+      */}
       <aside className="sticky top-0 hidden w-80 shrink-0 xl:block">
-        <CartPanel tender={tender} onTenderChange={setTenderRaw} onCheckout={startCheckout} />
+        <CartPanel
+          tenderRaw={tenderRaw}
+          onTenderChange={setTenderRaw}
+          onCheckout={() => setCheckoutOpen(true)}
+          discountType={discountType}
+          onDiscountChange={setDiscountType}
+        />
       </aside>
 
-      {/* Mobile / tablet cart button */}
-      {cartCount > 0 && (
+      {cartLinesCount > 0 && (
         <button
           onClick={() => setCartOpen(true)}
           className="fixed bottom-20 right-4 z-30 flex items-center gap-3 rounded-full bg-primary px-5 py-3 font-bold text-primary-foreground shadow-xl lg:bottom-6 xl:hidden"
         >
-          <ShoppingBag className="size-5" /> {cartCount} {cartCount === 1 ? "item" : "items"} · {peso(cartTotal)}
+          <ShoppingBag className="size-5" /> {cartCount} {cartCount === 1 ? "item" : "items"}
         </button>
       )}
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>
         <DialogContent className="max-w-md border-0 bg-transparent p-0 shadow-none [&>button]:hidden">
           <DialogTitle className="sr-only">Current order</DialogTitle>
-          <CartPanel tender={tender} onTenderChange={setTenderRaw} onCheckout={() => { setCartOpen(false); startCheckout() }} />
+          <CartPanel
+            tenderRaw={tenderRaw}
+            onTenderChange={setTenderRaw}
+            onCheckout={() => { setCartOpen(false); setCheckoutOpen(true) }}
+            discountType={discountType}
+            onDiscountChange={setDiscountType}
+          />
         </DialogContent>
       </Dialog>
 
       <CheckoutDialog
         open={checkoutOpen}
         onOpenChange={setCheckoutOpen}
-        tender={tender}
+        tenderRaw={tenderRaw}
         onTenderChange={setTenderRaw}
+        discountType={discountType}
+        onDiscountChange={setDiscountType}
       />
     </div>
   )

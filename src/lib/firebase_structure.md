@@ -23,8 +23,8 @@ This document describes the Firebase Realtime Database (RTDB) data model and sec
 {
   "users": {
     "<firebaseAuthUid>": {
-      "name": "Juan Dela Cruz",
-      "email": "customer@cuccu.test",
+      "name": "Cashier name",
+      "email": "cashier@example.com",
       "role": "cashier",
       "createdAt": "2026-01-05T00:00:00.000Z"
     }
@@ -152,6 +152,20 @@ the push key remains the real identifier.
 
 ---
 
+## Deploying these rules
+
+The rules live in **`database.rules.json`** at the repo root (the source of truth).
+The copy below is kept for reference. Deploy with:
+
+```bash
+npm run deploy:rules      # firebase deploy --only database
+```
+
+A local file edit does **not** change the deployed rules — the console must be
+published (or the command above run) for anything here to take effect.
+
+---
+
 ## Security Rules
 
 > **Why orders are nested under the customer id.** RTDB rules do **not** cascade
@@ -171,7 +185,6 @@ the push key remains the real identifier.
       "$uid": {
         ".read": "auth != null && (auth.uid === $uid || root.child('users/' + auth.uid + '/role').val() === 'admin')",
         ".write": "auth != null && (auth.uid === $uid || root.child('users/' + auth.uid + '/role').val() === 'admin')",
-
         "role": {
           ".validate": "newData.isString() && (newData.val() === 'cashier' || root.child('users/' + auth.uid + '/role').val() === 'admin')"
         },
@@ -181,7 +194,6 @@ the push key remains the real identifier.
         ".validate": "newData.hasChildren(['name', 'email', 'role', 'createdAt'])"
       }
     },
-
     "menu": {
       ".read": true,
       "$itemId": {
@@ -189,22 +201,31 @@ the push key remains the real identifier.
         ".validate": "newData.hasChildren(['name', 'price', 'description', 'category', 'available']) && newData.child('price').isNumber() && newData.child('price').val() > 0 && newData.child('available').isBoolean()"
       }
     },
-
     "orders": {
       ".read": "auth != null && root.child('users/' + auth.uid + '/role').val() === 'admin'",
       "$customerId": {
         ".read": "auth != null && (auth.uid === $customerId || root.child('users/' + auth.uid + '/role').val() === 'admin')",
-
         "$orderId": {
-          ".write": "auth != null && (
-            (!data.exists() && auth.uid === $customerId && newData.child('customerId').val() === $customerId && newData.child('status').val() === 'pending') ||
-            (data.exists() && root.child('users/' + auth.uid + '/role').val() === 'admin')
-          )",
+          ".write": "auth != null && ((!data.exists() && auth.uid === $customerId && newData.child('customerId').val() === $customerId && newData.child('status').val() === 'pending') || (data.exists() && root.child('users/' + auth.uid + '/role').val() === 'admin'))",
           ".validate": "newData.hasChildren(['customerId', 'customerName', 'items', 'total', 'paymentMethod', 'status', 'createdAt']) && newData.child('customerId').val() === $customerId && newData.child('total').isNumber() && newData.child('total').val() > 0",
-
+          "subtotal": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0)"
+          },
+          "discountType": {
+            ".validate": "!newData.exists() || newData.val() === 'none' || newData.val() === 'pwd' || newData.val() === 'senior'"
+          },
+          "discountAmount": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0)"
+          },
           "items": {
             "$itemKey": {
               ".validate": "newData.hasChildren(['menuItemId', 'name', 'price', 'qty', 'category']) && newData.child('qty').val() >= 1 && newData.child('qty').val() <= 99 && newData.child('price').isNumber() && newData.child('price').val() > 0"
+            }
+          },
+          "refunds": {
+            "$refundId": {
+              ".write": false,
+              ".validate": false
             }
           }
         }
@@ -213,6 +234,39 @@ the push key remains the real identifier.
   }
 }
 ```
+
+### Why `orders/.../refunds` is unwritable from any client
+
+`".write": false` means the **Admin SDK in a Cloud Function is the only writer** —
+the rules are bypassed by `firebase-admin`, which is exactly why the refund
+transaction can be trusted. No browser client, however modified, can fabricate a
+refund or inflate `refundedTotal`.
+
+---
+
+## Backend functions
+
+Three operations cannot be done safely from a browser and live in
+`functions/src/index.ts`:
+
+| Function | Why it needs a server |
+|----------|-----------------------|
+| `refundOrder` | The "amount remaining" check must be atomic (two refunds could otherwise both pass), and `approvedBy` must come from the verified session rather than client input. |
+| `createCashier` | Creating an Authentication user for somebody else needs the Admin SDK. |
+| `setCashierEnabled` | Disabling an Authentication account also needs the Admin SDK, and does not cascade to the database. |
+
+Every function re-reads the caller's role from the database rather than trusting
+the ID token, so a token issued before a role change cannot grant access.
+
+Deploy with:
+
+```bash
+npm run deploy:functions
+```
+
+**Until these are deployed, the refund and account-management buttons will report
+that they are unavailable.** They will not simulate success or imply that cash was
+returned.
 
 > `.validate` cascades to descendants, which is why `items` is nested under the
 > order and validated without repeating the parent check. `.read` and `.write`
@@ -318,7 +372,7 @@ For efficient querying, add these indexes in the Firebase console:
 | Index | Use Case |
 |-------|----------|
 | `customerId` | Fetch all orders for a specific customer |
-| `status` | Filter orders by status (kitchen queue) |
+| `status` | Filter orders by status, e.g. everything still `pending` |
 | `createdAt` | Sort orders by date (reports, history) |
 
 ---
@@ -349,30 +403,30 @@ Realtime Database → Data → users/<uid>/role → "admin"
 ```json
 {
   "users": {
-    "demoAdminUid": {
+    "<firebaseAuthUid>": {
       "name": "Owner/Manager",
-      "email": "admin@cuccu.test",
+      "email": "owner@example.com",
       "role": "admin",
       "createdAt": "2026-01-01T00:00:00.000Z"
     },
-    "demoCustomerUid": {
-      "name": "Juan Dela Cruz",
-      "email": "customer@cuccu.test",
+    "<anotherFirebaseAuthUid>": {
+      "name": "Cashier name",
+      "email": "cashier@example.com",
       "role": "cashier",
       "createdAt": "2026-01-05T00:00:00.000Z"
     }
   },
   "menu": {
-    "m_1": { "name": "Iced Americano", "price": 80, "description": "Pure espresso with chilled water.", category: "Coffee", "tag": null, "image": "/menu/iced-americano.jpg", "available": true },
-    "m_2": { "name": "Classic Milk Tea", "price": 95, "description": "Smooth and creamy milk tea.", category: "Milk Tea", "tag": null, "image": "/menu/classic-milk-tea.jpg", "available": true },
-    "m_3": { "name": "Spanish Latte", "price": 100, "description": "Espresso with condensed milk.", category: "Coffee", "tag": null, "image": "/menu/spanish-latte.jpg", "available": true },
-    "m_4": { "name": "Wintermelon Milk Tea", "price": 100, "description": "Refreshing wintermelon flavor.", category: "Milk Tea", "tag": null, "image": "/menu/wintermelon-milk-tea.jpg", "available": true },
-    "m_5": { "name": "Caramel Macchiato", "price": 100, "description": "Espresso with vanilla syrup, and caramel drizzle", category: "Coffee", "tag": null, "image": "/menu/caramel-macchiato.jpg", "available": true },
-    "m_6": { "name": "Matcha", "price": 105, "description": "Premium matcha with fresh milk.", category: "Others", "tag": "Non-coffee", "image": "/menu/matcha.jpg", "available": true },
-    "m_7": { "name": "Mocha Frappe", "price": 110, "description": "Blended coffee and chocolate topped with whipped cream", category: "Frappe", "tag": null, "image": "/menu/mocha-frappe.jpg", "available": true },
-    "m_8": { "name": "Taro Milk Tea", "price": 95, "description": "Creamy taro with fresh milk and tapioca pearls", category: "Milk Tea", "tag": null, "image": "/menu/taro-milk-tea.jpg", "available": true },
-    "m_9": { "name": "Java Chip Frappe", "price": 110, "description": "Blended coffee with chocolate chips.", category: "Frappe", "tag": null, "image": "/menu/java-chip-frappe.jpg", "available": true },
-    "m_10": { "name": "Caramel Frappe", "price": 110, "description": "Rich caramel flavor with whipped cream.", category: "Frappe", "tag": null, "image": "/menu/caramel-frappe.jpg", "available": true }
+    "m_1": { "name": "Iced Americano", "price": 80, "description": "Pure espresso with chilled water.", "category": "Coffee", "tag": null, "image": "/menu/iced-americano.jpg", "available": true },
+    "m_2": { "name": "Classic Milk Tea", "price": 95, "description": "Smooth and creamy milk tea.", "category": "Milk Tea", "tag": null, "image": "/menu/classic-milk-tea.jpg", "available": true },
+    "m_3": { "name": "Spanish Latte", "price": 100, "description": "Espresso with condensed milk.", "category": "Coffee", "tag": null, "image": "/menu/spanish-latte.jpg", "available": true },
+    "m_4": { "name": "Wintermelon Milk Tea", "price": 100, "description": "Refreshing wintermelon flavor.", "category": "Milk Tea", "tag": null, "image": "/menu/wintermelon-milk-tea.jpg", "available": true },
+    "m_5": { "name": "Caramel Macchiato", "price": 100, "description": "Espresso with vanilla syrup, and caramel drizzle", "category": "Coffee", "tag": null, "image": "/menu/caramel-macchiato.jpg", "available": true },
+    "m_6": { "name": "Matcha", "price": 105, "description": "Premium matcha with fresh milk.", "category": "Others", "tag": "Non-coffee", "image": "/menu/matcha.jpg", "available": true },
+    "m_7": { "name": "Mocha Frappe", "price": 110, "description": "Blended coffee and chocolate topped with whipped cream", "category": "Frappe", "tag": null, "image": "/menu/mocha-frappe.jpg", "available": true },
+    "m_8": { "name": "Taro Milk Tea", "price": 95, "description": "Creamy taro with fresh milk and tapioca pearls", "category": "Milk Tea", "tag": null, "image": "/menu/taro-milk-tea.jpg", "available": true },
+    "m_9": { "name": "Java Chip Frappe", "price": 110, "description": "Blended coffee with chocolate chips.", "category": "Frappe", "tag": null, "image": "/menu/java-chip-frappe.jpg", "available": true },
+    "m_10": { "name": "Caramel Frappe", "price": 110, "description": "Rich caramel flavor with whipped cream.", "category": "Frappe", "tag": null, "image": "/menu/caramel-frappe.jpg", "available": true }
   }
 }
 ```

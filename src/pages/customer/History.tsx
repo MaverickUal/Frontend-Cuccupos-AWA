@@ -33,7 +33,8 @@ function Progress({ status }: { status: OrderStatus }) {
 export default function HistoryPage() {
   const { orders, currentUser, reorder } = useStore()
   const navigate = useNavigate()
-  const mine = orders.filter((o) => o.customerId === currentUser?.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  // The store already hands us newest-first; filtering preserves that order.
+  const mine = orders.filter((o) => o.customerId === currentUser?.id)
 
   if (mine.length === 0)
     return (
