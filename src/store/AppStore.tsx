@@ -1,37 +1,28 @@
 /**
- * MOCK DATA LAYER.
- * Everything the UI reads or writes goes through `useStore()`. State is kept in React and
- * persisted to localStorage so the demo survives a refresh. When the backend is ready,
- * replace the bodies of these functions with API calls and leave the pages untouched.
+ * FIREBASE DATA LAYER.
+ * All data is read from and written to Firebase RTDB via src/lib/actions.ts.
+ * State is kept in React and synced with Firebase using onValue listeners.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
 import type { CartLine, MenuItem, Order, OrderStatus, PaymentMethod, User } from "@/types"
-import { generateSeedOrders, seedMenu, seedUsers } from "@/data/seed"
+import {
+  getMenuItems,
+  getOrders,
+  getUsers,
+  onAuthChange,
+  loginUser,
+  registerUser,
+  logoutUser,
+  placeOrder as placeOrderAction,
+  updateOrderStatus as updateOrderStatusAction,
+  addMenuItem as addMenuItemAction,
+  updateMenuItem as updateMenuItemAction,
+  deleteMenuItem as deleteMenuItemAction,
+  toggleAvailability as toggleAvailabilityAction,
+  resetDemoData as resetDemoDataAction,
+} from "@/lib/actions"
 
 export const MAX_QTY = 99
-const STORAGE_KEY = "cuccupos:v1"
-
-interface Data {
-  users: User[]
-  menu: MenuItem[]
-  orders: Order[]
-  cart: CartLine[]
-  sessionUserId: string | null
-}
-
-function freshData(): Data {
-  return { users: seedUsers, menu: seedMenu, orders: generateSeedOrders(), cart: [], sessionUserId: null }
-}
-
-function load(): Data {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) return JSON.parse(raw) as Data
-  } catch {
-    /* ignore corrupt storage */
-  }
-  return freshData()
-}
 
 export interface ResolvedCartLine {
   item: MenuItem
@@ -48,154 +39,249 @@ interface Store {
   cartLines: ResolvedCartLine[]
   cartCount: number
   cartTotal: number
+  loading: boolean
+  /** True once Firebase Auth has reported whether anyone is signed in. */
+  authReady: boolean
   // auth
-  login: (email: string, password: string) => AuthResult
-  register: (name: string, email: string, password: string) => AuthResult
-  logout: () => void
+  login: (email: string, password: string) => Promise<AuthResult>
+  register: (name: string, email: string, password: string) => Promise<AuthResult>
+  logout: () => Promise<void>
   // cart (customer)
   addToCart: (menuItemId: string) => void
   setQty: (menuItemId: string, qty: number) => void
   removeFromCart: (menuItemId: string) => void
   clearCart: () => void
   reorder: (order: Order) => void
-  placeOrder: (paymentMethod: PaymentMethod, note?: string) => Order | null
+  placeOrder: (cashTendered: number, note?: string) => Promise<Order | null>
   // admin
-  updateOrderStatus: (id: string, status: OrderStatus) => void
-  saveMenuItem: (item: MenuInput) => void
-  deleteMenuItem: (id: string) => void
-  toggleAvailability: (id: string) => void
-  resetDemoData: () => void
+  updateOrderStatus: (id: string, status: OrderStatus) => Promise<void>
+  saveMenuItem: (item: MenuInput) => Promise<{ success: boolean; message: string }>
+  deleteMenuItem: (id: string) => Promise<{ success: boolean; message: string }>
+  toggleAvailability: (id: string) => Promise<{ success: boolean; message: string }>
+  resetDemoData: () => Promise<{ success: boolean; message: string }>
 }
 
 const Ctx = createContext<Store | null>(null)
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [data, setData] = useState<Data>(load)
+  const [menu, setMenu] = useState<MenuItem[]>([])
+  const [orders, setOrders] = useState<Order[]>([])
+  const [users, setUsers] = useState<User[]>([])
+  const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [cart, setCart] = useState<CartLine[]>([])
+  const [loading, setLoading] = useState(true)
+  const [authReady, setAuthReady] = useState(false)
+
+  // Menu is publicly readable, so it is always subscribed.
+  // Auth state drives the identity of the current user.
+  useEffect(() => {
+    const unsubMenu = getMenuItems((items) => {
+      setMenu(items)
+      setLoading(false)
+    })
+
+    const unsubAuth = onAuthChange((user) => {
+      setCurrentUser(user)
+      // Route guards wait on this so a hard refresh on a deep link doesn't get
+      // bounced to /login (and then to the home page) before auth has resolved.
+      setAuthReady(true)
+    })
+
+    return () => {
+      unsubMenu?.()
+      unsubAuth?.()
+    }
+  }, [])
+
+  // Orders and users are role-scoped, so they re-subscribe whenever the
+  // signed-in user changes. Admins get the full feed; a cashier only ever
+  // reads their own orders (query) and never the customer list.
+  const userId = currentUser?.id ?? null
+  const isAdmin = currentUser?.role === "admin"
 
   useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
-    } catch {
-      /* storage full or blocked */
+    if (!userId) {
+      setOrders([])
+      setUsers([])
+      return
     }
-  }, [data])
 
-  const currentUser = useMemo(() => data.users.find((u) => u.id === data.sessionUserId) ?? null, [data.users, data.sessionUserId])
+    const unsubOrders = getOrders(setOrders, isAdmin ? null : userId)
+    const unsubUsers = isAdmin ? getUsers(setUsers) : null
+
+    if (!isAdmin) setUsers(currentUser ? [currentUser] : [])
+
+    return () => {
+      unsubOrders?.()
+      unsubUsers?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId, isAdmin])
 
   const cartLines = useMemo<ResolvedCartLine[]>(
     () =>
-      data.cart.flatMap((l) => {
-        const item = data.menu.find((m) => m.id === l.menuItemId)
+      cart.flatMap((l) => {
+        const item = menu.find((m) => m.id === l.menuItemId)
         return item ? [{ item, qty: l.qty }] : []
       }),
-    [data.cart, data.menu]
+    [cart, menu]
   )
   const cartCount = cartLines.reduce((s, l) => s + l.qty, 0)
   const cartTotal = cartLines.reduce((s, l) => s + l.qty * l.item.price, 0)
 
-  const login: Store["login"] = (email, password) => {
-    const user = data.users.find((u) => u.email.toLowerCase() === email.trim().toLowerCase() && u.password === password)
-    if (!user) return { ok: false, error: "Incorrect email or password." }
-    setData((d) => ({ ...d, sessionUserId: user.id }))
-    return { ok: true, user }
-  }
-
-  const register: Store["register"] = (name, email, password) => {
-    if (data.users.some((u) => u.email.toLowerCase() === email.trim().toLowerCase()))
-      return { ok: false, error: "An account with this email already exists." }
-    const user: User = {
-      id: `u_${Date.now()}`,
-      name: name.trim(),
-      email: email.trim(),
-      password,
-      role: "customer",
-      createdAt: new Date().toISOString(),
+  const login = async (email: string, password: string): Promise<AuthResult> => {
+    const result = await loginUser(email, password)
+    if (result.success && result.data) {
+      const user = { ...result.data, role: result.data.role as User["role"] }
+      setCurrentUser(user)
+      return { ok: true, user }
     }
-    setData((d) => ({ ...d, users: [...d.users, user], sessionUserId: user.id }))
-    return { ok: true, user }
+    return { ok: false, error: result.message }
   }
 
-  const logout = () => setData((d) => ({ ...d, sessionUserId: null, cart: [] }))
+  const register = async (name: string, email: string, password: string): Promise<AuthResult> => {
+    const result = await registerUser(name, email, password)
+    if (result.success && result.data) {
+      const user = { ...result.data, role: result.data.role as User["role"] }
+      setCurrentUser(user)
+      return { ok: true, user }
+    }
+    return { ok: false, error: result.message }
+  }
 
-  const addToCart: Store["addToCart"] = (id) =>
-    setData((d) => {
-      const item = d.menu.find((m) => m.id === id)
-      if (!item || !item.available) return d
-      const existing = d.cart.find((l) => l.menuItemId === id)
-      const cart = existing
-        ? d.cart.map((l) => (l.menuItemId === id ? { ...l, qty: Math.min(l.qty + 1, MAX_QTY) } : l))
-        : [...d.cart, { menuItemId: id, qty: 1 }]
-      return { ...d, cart }
+  const logout = async () => {
+    await logoutUser()
+    setCurrentUser(null)
+    setCart([])
+  }
+
+  const addToCart = (id: string) =>
+    setCart((prev) => {
+      const item = menu.find((m) => m.id === id)
+      if (!item || !item.available) return prev
+      const existing = prev.find((l) => l.menuItemId === id)
+      const newCart = existing
+        ? prev.map((l) => (l.menuItemId === id ? { ...l, qty: Math.min(l.qty + 1, MAX_QTY) } : l))
+        : [...prev, { menuItemId: id, qty: 1 }]
+      return newCart
     })
 
-  // Quantity can never go below 1. Use removeFromCart to take an item out.
-  const setQty: Store["setQty"] = (id, qty) =>
-    setData((d) => ({
-      ...d,
-      cart: d.cart.map((l) => (l.menuItemId === id ? { ...l, qty: Math.max(1, Math.min(MAX_QTY, Math.floor(qty) || 1)) } : l)),
-    }))
+  const setQty = (id: string, qty: number) =>
+    setCart((prev) =>
+      prev.map((l) => (l.menuItemId === id ? { ...l, qty: Math.max(1, Math.min(MAX_QTY, Math.floor(qty) || 1)) } : l))
+    )
 
-  const removeFromCart: Store["removeFromCart"] = (id) => setData((d) => ({ ...d, cart: d.cart.filter((l) => l.menuItemId !== id) }))
-  const clearCart = () => setData((d) => ({ ...d, cart: [] }))
+  const removeFromCart = (id: string) => setCart((prev) => prev.filter((l) => l.menuItemId !== id))
+  const clearCart = () => setCart([])
 
-  const reorder: Store["reorder"] = (order) =>
-    setData((d) => {
-      let cart = [...d.cart]
-      order.items.forEach((oi) => {
-        const m = d.menu.find((x) => x.id === oi.menuItemId)
+  const reorder = (order: Order) =>
+    setCart((prev) => {
+      let newCart = [...prev]
+      Object.values(order.items).forEach((oi: any) => {
+        const m = menu.find((x) => x.id === oi.menuItemId)
         if (!m || !m.available) return
-        const ex = cart.find((l) => l.menuItemId === oi.menuItemId)
-        if (ex) cart = cart.map((l) => (l === ex ? { ...l, qty: Math.min(l.qty + oi.qty, MAX_QTY) } : l))
-        else cart.push({ menuItemId: oi.menuItemId, qty: oi.qty })
+        const ex = newCart.find((l) => l.menuItemId === oi.menuItemId)
+        if (ex) newCart = newCart.map((l) => (l === ex ? { ...l, qty: Math.min(l.qty + oi.qty, MAX_QTY) } : l))
+        else newCart.push({ menuItemId: oi.menuItemId, qty: oi.qty })
       })
-      return { ...d, cart }
+      return newCart
     })
 
-  const placeOrder: Store["placeOrder"] = useCallback(
-    (paymentMethod, note) => {
-      if (!currentUser || cartLines.length === 0) return null
-      const order: Order = {
-        id: `ORD-${1001 + data.orders.length}`,
-        customerId: currentUser.id,
-        customerName: currentUser.name,
-        items: cartLines.map((l) => ({ menuItemId: l.item.id, name: l.item.name, price: l.item.price, qty: l.qty, category: l.item.category })),
-        total: cartTotal,
-        paymentMethod,
-        status: "pending",
-        createdAt: new Date().toISOString(),
-        note,
-      }
-      setData((d) => ({ ...d, orders: [order, ...d.orders], cart: [] }))
-      return order
-    },
-    [currentUser, cartLines, cartTotal, data.orders.length]
-  )
+  /** Round to 2 decimals so peso maths never drifts on floats (0.1 + 0.2). */
+  const money = (n: number) => Math.round(n * 100) / 100
 
-  const updateOrderStatus: Store["updateOrderStatus"] = (id, status) =>
-    setData((d) => ({ ...d, orders: d.orders.map((o) => (o.id === id ? { ...o, status } : o)) }))
+  const placeOrder = async (cashTendered: number, note?: string): Promise<Order | null> => {
+    if (!currentUser || cartLines.length === 0) return null
 
-  const saveMenuItem: Store["saveMenuItem"] = (input) =>
-    setData((d) => {
-      const tag = input.category === "Others" ? "Non-coffee" : undefined
-      if (input.id) return { ...d, menu: d.menu.map((m) => (m.id === input.id ? ({ ...m, ...input, tag } as MenuItem) : m)) }
-      const item: MenuItem = { ...input, id: `m_${Date.now()}`, tag }
-      return { ...d, menu: [...d.menu, item] }
-    })
+    // The shop is cash-only, so the tender is part of the order record and the
+    // change is derived here rather than trusted from the caller.
+    const tendered = money(cashTendered)
+    const changeGiven = money(tendered - cartTotal)
 
-  const deleteMenuItem: Store["deleteMenuItem"] = (id) =>
-    setData((d) => ({ ...d, menu: d.menu.filter((m) => m.id !== id), cart: d.cart.filter((l) => l.menuItemId !== id) }))
+    const orderData = {
+      customerId: currentUser.id,
+      customerName: currentUser.name,
+      items: cartLines.reduce((acc, l) => {
+        acc[l.item.id] = {
+          menuItemId: l.item.id,
+          name: l.item.name,
+          price: l.item.price,
+          qty: l.qty,
+          category: l.item.category,
+        }
+        return acc
+      }, {} as Record<string, any>),
+      total: cartTotal,
+      paymentMethod: "Cash" as PaymentMethod,
+      cashTendered: tendered,
+      changeGiven,
+      status: "pending" as OrderStatus,
+      createdAt: new Date().toISOString(),
+      note: note || null,
+    }
 
-  const toggleAvailability: Store["toggleAvailability"] = (id) =>
-    setData((d) => ({ ...d, menu: d.menu.map((m) => (m.id === id ? { ...m, available: !m.available } : m)) }))
+    const result = await placeOrderAction(orderData)
+    if (result.success) {
+      setCart([])
+      return result.data as Order
+    }
+    return null
+  }
 
-  const resetDemoData = () => setData({ ...freshData(), sessionUserId: data.sessionUserId })
+  const updateOrderStatus = async (id: string, status: OrderStatus) => {
+    const order = orders.find((o) => o.id === id)
+    if (!order) return
+    await updateOrderStatusAction(order.customerId, id, status)
+  }
+
+  const saveMenuItem = async (input: MenuInput) => {
+    if (input.id) {
+      const { id, ...rest } = input
+      return updateMenuItemAction(id, rest)
+    }
+    return addMenuItemAction(input as any)
+  }
+
+  const deleteMenuItem = async (id: string) => {
+    return deleteMenuItemAction(id)
+  }
+
+  const toggleAvailability = async (id: string) => {
+    const item = menu.find((m) => m.id === id)
+    if (!item) return { success: false, message: "Item not found" }
+    return toggleAvailabilityAction(id, item.available)
+  }
+
+  const resetDemoData = async () => {
+    return resetDemoDataAction()
+  }
 
   const value: Store = {
-    currentUser, users: data.users, menu: data.menu, orders: data.orders,
-    cartLines, cartCount, cartTotal,
-    login, register, logout, addToCart, setQty, removeFromCart, clearCart, reorder, placeOrder,
-    updateOrderStatus, saveMenuItem, deleteMenuItem, toggleAvailability, resetDemoData,
+    currentUser,
+    users,
+    menu,
+    orders,
+    cartLines,
+    cartCount,
+    cartTotal,
+    loading,
+    authReady,
+    login,
+    register,
+    logout,
+    addToCart,
+    setQty,
+    removeFromCart,
+    clearCart,
+    reorder,
+    placeOrder,
+    updateOrderStatus,
+    saveMenuItem,
+    deleteMenuItem,
+    toggleAvailability,
+    resetDemoData,
   }
+
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
 

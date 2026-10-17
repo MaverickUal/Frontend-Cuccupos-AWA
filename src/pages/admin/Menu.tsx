@@ -26,13 +26,17 @@ function ItemForm({ item, onDone }: { item: MenuItem | null; onDone: () => void 
   const [image, setImage] = useState(item?.image ?? "")
   const [available, setAvailable] = useState(item?.available ?? true)
   const [error, setError] = useState("")
+  const [saving, setSaving] = useState(false)
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     const p = Number(price)
     if (!name.trim()) return setError("Enter a name for the item.")
     if (!Number.isFinite(p) || p <= 0) return setError("Enter a price greater than 0.")
-    saveMenuItem({ id: item?.id, name: name.trim(), price: p, category, description: description.trim(), image: image.trim() || undefined, available })
+    setSaving(true)
+    const result = await saveMenuItem({ id: item?.id, name: name.trim(), price: p, category, description: description.trim(), image: image.trim() || undefined, available })
+    setSaving(false)
+    if (!result.success) return setError(result.message)
     toast.success(item ? "Item updated" : "Item added")
     onDone()
   }
@@ -59,7 +63,7 @@ function ItemForm({ item, onDone }: { item: MenuItem | null; onDone: () => void 
       {error && <p role="alert" className="text-sm font-medium text-destructive">{error}</p>}
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onDone}>Cancel</Button>
-        <Button type="submit">{item ? "Save changes" : "Add item"}</Button>
+        <Button type="submit" disabled={saving}>{saving ? "Saving…" : item ? "Save changes" : "Add item"}</Button>
       </DialogFooter>
     </form>
   )

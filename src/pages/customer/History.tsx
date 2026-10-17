@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { StatusBadge } from "@/components/StatusBadge"
 import { useStore } from "@/store/AppStore"
-import { formatDateTime, peso } from "@/lib/format"
+import { formatDateTime, orderNo, peso } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { OrderStatus } from "@/types"
 
@@ -51,13 +51,13 @@ export default function HistoryPage() {
         <Card key={o.id} className="p-5">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <p className="text-lg font-bold">{o.id}</p>
+              <p className="text-lg font-bold">{orderNo(o)}</p>
               <p className="text-xs text-muted-foreground">{formatDateTime(o.createdAt)} · {o.paymentMethod}</p>
             </div>
             <StatusBadge status={o.status} />
           </div>
           <ul className="mt-3 space-y-1 text-sm">
-            {o.items.map((i) => (
+            {Object.values(o.items).map((i) => (
               <li key={i.menuItemId} className="flex justify-between"><span>{i.qty} × {i.name}</span><span>{peso(i.qty * i.price)}</span></li>
             ))}
           </ul>

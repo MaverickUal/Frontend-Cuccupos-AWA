@@ -1,8 +1,8 @@
 import type { MenuItem, Order, User } from "@/types"
 
 export const seedUsers: User[] = [
-  { id: "u_admin", name: "Owner/Manager", email: "admin@cuccu.test", password: "admin123", role: "admin", createdAt: "2026-01-01T00:00:00.000Z" },
-  { id: "u_customer", name: "Juan Dela Cruz", email: "customer@cuccu.test", password: "password123", role: "customer", createdAt: "2026-01-05T00:00:00.000Z" },
+  { id: "u_admin", name: "Owner/Manager", email: "admin@cuccu.test", role: "admin", createdAt: "2026-01-01T00:00:00.000Z" },
+  { id: "u_customer", name: "Juan Dela Cruz", email: "customer@cuccu.test", role: "cashier", createdAt: "2026-01-05T00:00:00.000Z" },
 ]
 
 

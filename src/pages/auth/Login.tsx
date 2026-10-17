@@ -13,12 +13,15 @@ export default function Login() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     setError("")
     if (!email.trim() || !password) return setError("Enter your email and password.")
-    const res = login(email, password)
+    setLoading(true)
+    const res = await login(email, password)
+    setLoading(false)
     if (!res.ok) return setError(res.error)
     toast.success(`Welcome back, ${res.user.name}`)
     navigate(res.user.role === "admin" ? "/admin/dashboard" : "/order", { replace: true })
@@ -36,21 +39,14 @@ export default function Login() {
           <Input id="password" type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </div>
         {error && <p role="alert" className="text-sm font-medium text-destructive">{error}</p>}
-        <Button type="submit" className="w-full">Sign in</Button>
+        <Button type="submit" className="w-full" disabled={loading}>
+          {loading ? "Signing in…" : "Sign in"}
+        </Button>
       </form>
 
       <p className="mt-5 text-center text-sm text-muted-foreground">
         New here? <Link to="/register" className="font-bold text-primary hover:underline">Create an account</Link>
       </p>
-
-      {/* Demo helpers. Remove when the real backend is connected. */}
-      <div className="mt-5 rounded-xl bg-muted p-3 text-xs">
-        <p className="mb-2 font-semibold">Demo accounts</p>
-        <div className="flex gap-2">
-          <Button type="button" size="sm" variant="secondary" className="flex-1" onClick={() => { setEmail("customer@cuccu.test"); setPassword("password123") }}>Customer</Button>
-          <Button type="button" size="sm" variant="secondary" className="flex-1" onClick={() => { setEmail("admin@cuccu.test"); setPassword("admin123") }}>Admin</Button>
-        </div>
-      </div>
     </AuthLayout>
   )
 }

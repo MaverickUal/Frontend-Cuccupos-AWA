@@ -5,3 +5,10 @@ export const formatDateTime = (iso: string) =>
 
 export const formatDate = (iso: string | Date) =>
   new Date(iso).toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" })
+
+/**
+ * The order number to show a human.
+ * `displayId` is the friendly "ORD-…" generated at checkout; the Firebase push
+ * key is only a fallback for records that predate it.
+ */
+export const orderNo = (o: { id: string; displayId?: string }) => o.displayId || o.id

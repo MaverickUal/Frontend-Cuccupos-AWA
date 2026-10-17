@@ -12,16 +12,19 @@ export default function Register() {
   const navigate = useNavigate()
   const [form, setForm] = useState({ name: "", email: "", password: "", confirm: "" })
   const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm((f) => ({ ...f, [k]: e.target.value }))
 
-  function submit(e: FormEvent) {
+  async function submit(e: FormEvent) {
     e.preventDefault()
     setError("")
     if (!form.name.trim()) return setError("Enter your full name.")
     if (!/^\S+@\S+\.\S+$/.test(form.email.trim())) return setError("Enter a valid email address.")
     if (form.password.length < 8) return setError("Password must be at least 8 characters.")
     if (form.password !== form.confirm) return setError("Passwords don't match.")
-    const res = register(form.name, form.email, form.password)
+    setLoading(true)
+    const res = await register(form.name, form.email, form.password)
+    setLoading(false)
     if (!res.ok) return setError(res.error)
     toast.success("Account created")
     navigate("/order", { replace: true })
@@ -47,7 +50,9 @@ export default function Register() {
           <Input id="confirm" type="password" autoComplete="new-password" value={form.confirm} onChange={set("confirm")} />
         </div>
         {error && <p role="alert" className="text-sm font-medium text-destructive">{error}</p>}
-        <Button type="submit" className="w-full">Create account</Button>
+        <Button type="submit" className="w-full" disabled={loading}>
+          {loading ? "Creating account…" : "Create account"}
+        </Button>
       </form>
       <p className="mt-5 text-center text-sm text-muted-foreground">
         Already have an account? <Link to="/login" className="font-bold text-primary hover:underline">Sign in</Link>

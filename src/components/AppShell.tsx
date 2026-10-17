@@ -4,7 +4,7 @@ import type { LucideIcon } from "lucide-react"
 import { Logo } from "@/components/Logo"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { useStore } from "@/store/AppStore"
-import { peso } from "@/lib/format"
+import { orderNo, peso } from "@/lib/format"
 import { cn } from "@/lib/utils"
 
 interface NavItem { to: string; label: string; icon: LucideIcon }
@@ -17,11 +17,11 @@ const adminNav: NavItem[] = [
   { to: "/admin/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { to: "/admin/orders", label: "Orders", icon: ClipboardList },
   { to: "/admin/menu", label: "Menu", icon: CupSoda },
-  { to: "/admin/customers", label: "Customers", icon: Users },
+  { to: "/admin/cashiers", label: "Cashiers", icon: Users },
   { to: "/admin/reports", label: "Reports", icon: BarChart3 },
 ]
 
-function NotificationBell({ variant }: { variant: "customer" | "admin" }) {
+function NotificationBell({ variant }: { variant: "cashier" | "admin" }) {
   const { orders, currentUser } = useStore()
   const navigate = useNavigate()
   const items =
@@ -43,8 +43,8 @@ function NotificationBell({ variant }: { variant: "customer" | "admin" }) {
         {items.length === 0 && <p className="px-2 py-3 text-sm text-muted-foreground">You're all caught up.</p>}
         {items.slice(0, 5).map((o) => (
           <DropdownMenuItem key={o.id} onSelect={() => navigate(variant === "admin" ? "/admin/orders" : "/history")} className="flex-col items-start gap-0">
-            <span className="font-semibold">{variant === "admin" ? `${o.id} from ${o.customerName}` : `${o.id} is ready`}</span>
-            <span className="text-xs text-muted-foreground">{peso(o.total)} · {o.items.reduce((s, i) => s + i.qty, 0)} items</span>
+            <span className="font-semibold">{variant === "admin" ? `${orderNo(o)} from ${o.customerName}` : `${orderNo(o)} is ready`}</span>
+            <span className="text-xs text-muted-foreground">{peso(o.total)} · {Object.values(o.items).reduce((s: number, i: any) => s + i.qty, 0)} items</span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -52,14 +52,14 @@ function NotificationBell({ variant }: { variant: "customer" | "admin" }) {
   )
 }
 
-export function AppShell({ variant }: { variant: "customer" | "admin" }) {
+export function AppShell({ variant }: { variant: "cashier" | "admin" }) {
   const nav = variant === "admin" ? adminNav : customerNav
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { currentUser, logout } = useStore()
   const active = nav.find((n) => pathname.startsWith(n.to)) ?? nav[0]
   const ActiveIcon = active.icon
-  const displayName = variant === "admin" ? "Owner/Manager" : currentUser?.name ?? "Customer"
+  const displayName = variant === "admin" ? "Owner/Manager" : currentUser?.name ?? "Cashier"
 
   return (
     <div className="relative flex h-screen gap-4 overflow-hidden bg-sidebar lg:p-5 print:block print:h-auto print:overflow-visible print:bg-white print:p-0">
