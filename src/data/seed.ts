@@ -1,8 +1,14 @@
 import type { MenuItem, Order, User } from "@/types"
 
+/**
+ * Shape reference only — these records are never written to Firebase and no
+ * credentials live in this repository. Provision real accounts from
+ * /admin/cashiers, or set `users/<uid>/role` to "admin" by hand for the first
+ * administrator.
+ */
 export const seedUsers: User[] = [
-  { id: "u_admin", name: "Owner/Manager", email: "admin@cuccu.test", role: "admin", createdAt: "2026-01-01T00:00:00.000Z" },
-  { id: "u_customer", name: "Juan Dela Cruz", email: "customer@cuccu.test", role: "cashier", createdAt: "2026-01-05T00:00:00.000Z" },
+  { id: "u_admin", name: "Owner/Manager", email: "", role: "admin", createdAt: "2026-01-01T00:00:00.000Z" },
+  { id: "u_cashier", name: "", email: "", role: "cashier", createdAt: "2026-01-05T00:00:00.000Z" },
 ]
 
 

@@ -26,6 +26,8 @@ import {
   onAuthStateChanged,
 } from "firebase/auth"
 import { z } from "zod"
+import { computeDiscount } from "@/lib/discounts"
+import { requestRefund as refundOrderFn, createCashier as createCashierFn, setCashierEnabled as setCashierEnabledFn } from "@/lib/functionsClient"
 
 // ---------------------------------------------------------------------------
 // Firebase initialization
@@ -62,6 +64,68 @@ export const makeDisplayId = () => "ORD-" + Date.now().toString(36).toUpperCase(
 // ---------------------------------------------------------------------------
 // Zod validation schemas
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Discounts and refunds — validated against the same maths the UI shows, so a
+// tampered client cannot persist numbers the calculator would never produce.
+// ---------------------------------------------------------------------------
+
+export const orderSchema = z
+  .object({
+    customerId: z.string().min(1, "Customer ID is required"),
+    customerName: z.string().min(1, "Customer name is required"),
+    items: z.record(
+      z.string(),
+      z.object({
+        menuItemId: z.string(),
+        name: z.string(),
+        price: z.number().nonnegative(),
+        qty: z.number().min(1).max(99),
+        category: z.string(),
+      })
+    ),
+    subtotal: z.number().nonnegative().optional(),
+    discountType: z.enum(["none", "pwd", "senior"]).optional(),
+    discountAmount: z.number().nonnegative().optional(),
+    total: z.number().positive("Total must be positive"),
+    paymentMethod: z.literal("Cash"),
+    cashTendered: z.number().nonnegative("Cash tendered cannot be negative").optional(),
+    changeGiven: z.number().nonnegative("Change cannot be negative").optional(),
+    // New orders must start pending; the database rules require this too, so a
+    // client cannot create an order that is already completed or cancelled.
+    status: z.literal("pending"),
+    createdAt: z.string(),
+    note: z.string().nullable().optional(),
+  })
+  .superRefine((o, ctx) => {
+    // Recompute the money. Anything that doesn't match is rejected outright.
+    const lines = Object.values(o.items)
+    const expected = computeDiscount(
+      lines.map((l) => ({ category: l.category, qty: l.qty, price: l.price })),
+      o.discountType ?? "none"
+    )
+    const r2 = (n: number) => Math.round(n * 100) / 100
+
+    if (o.subtotal !== undefined && r2(o.subtotal) !== r2(expected.subtotal)) {
+      ctx.addIssue({ code: "custom", message: "Subtotal does not match the line items.", path: ["subtotal"] })
+    }
+    if (o.total !== r2(expected.total)) {
+      ctx.addIssue({ code: "custom", message: "Total does not match the discount calculation.", path: ["total"] })
+    }
+    const statedDiscount = o.discountAmount ?? 0
+    if (r2(statedDiscount) !== r2(expected.amount)) {
+      ctx.addIssue({ code: "custom", message: "Discount amount is not valid.", path: ["discountAmount"] })
+    }
+    if (o.cashTendered !== undefined && o.cashTendered + 0.004 < expected.total) {
+      ctx.addIssue({ code: "custom", message: "Cash tendered does not cover the total.", path: ["cashTendered"] })
+    }
+    if (o.changeGiven !== undefined) {
+      const expectedChange = r2((o.cashTendered ?? 0) - expected.total)
+      if (r2(o.changeGiven) !== expectedChange) {
+        ctx.addIssue({ code: "custom", message: "Change does not match the tender.", path: ["changeGiven"] })
+      }
+    }
+  })
+
 export const menuItemSchema = z.object({
   name: z.string().min(1, "Name is required"),
   price: z.number().positive("Price must be greater than 0"),
@@ -70,28 +134,6 @@ export const menuItemSchema = z.object({
   tag: z.string().nullable().optional(),
   image: z.string().nullable().optional(),
   available: z.boolean(),
-})
-
-export const orderSchema = z.object({
-  customerId: z.string().min(1, "Customer ID is required"),
-  customerName: z.string().min(1, "Customer name is required"),
-  items: z.record(
-    z.string(),
-    z.object({
-      menuItemId: z.string(),
-      name: z.string(),
-      price: z.number(),
-      qty: z.number().min(1).max(99),
-      category: z.string(),
-    })
-  ),
-  total: z.number().positive("Total must be positive"),
-  paymentMethod: z.literal("Cash"),
-  cashTendered: z.number().nonnegative("Cash tendered cannot be negative").optional(),
-  changeGiven: z.number().nonnegative("Change cannot be negative").optional(),
-  status: z.enum(["pending", "preparing", "ready", "completed", "cancelled"]),
-  createdAt: z.string(),
-  note: z.string().nullable().optional(),
 })
 
 export const userSchema = z.object({
@@ -613,7 +655,12 @@ export const updateUser = async (id: string, userData: any) => {
 }
 
 /**
- * Delete a user
+ * Delete a user.
+ *
+ * Retained only for a user who has no orders and no refunds; the UI routes staff
+ * removal through `disableCashier` in functionsClient instead, because deleting
+ * the RTDB profile would orphan their past orders and would not touch their
+ * Authentication account anyway. See functions/src/index.ts.
  */
 export const deleteUser = async (id: string) => {
   try {
@@ -629,6 +676,42 @@ export const deleteUser = async (id: string) => {
       message: error.message,
     }
   }
+}
+
+/**
+ * Enable/disable a cashier.
+ *
+ * Account removal goes through a Cloud Function because disabling an
+ * Authentication account needs the Admin SDK, which cannot live in the browser.
+ * On failure nothing is written, so the UI can report the real reason.
+ */
+export const setCashierEnabled = async (uid: string, enabled: boolean) => {
+  const res = await setCashierEnabledFn(uid, enabled)
+  return res.ok
+    ? { success: true, message: enabled ? "Account re-enabled" : "Account disabled" }
+    : { success: false, message: res.error }
+}
+
+/**
+ * Create a cashier account via the backend. Always the `cashier` role.
+ */
+export const createCashierAccount = async (name: string, email: string, password: string) => {
+  const res = await createCashierFn({ name, email, password })
+  return res.ok
+    ? { success: true, message: `Cashier ${res.data.name} created`, data: res.data }
+    : { success: false, message: res.error }
+}
+
+/**
+ * Refunds go through a Cloud Function: the remaining-amount check must be atomic
+ * and `approvedBy` must come from the verified session. A refund row therefore
+ * exists only once the cash has actually been handed back.
+ */
+export const refundOrder = async (orderId: string, amount: number, reason: string) => {
+  const res = await refundOrderFn(orderId, amount, reason)
+  return res.ok
+    ? { success: true, message: "Refund recorded", data: res.data }
+    : { success: false, message: res.error }
 }
 
 // ===========================================================================

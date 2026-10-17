@@ -28,3 +28,6 @@ pnpm-debug.log*
 
 # Test coverage
 coverage/
+# Firebase Functions build output
+functions/lib/
+functions/node_modules/

@@ -4,7 +4,10 @@
  * State is kept in React and synced with Firebase using onValue listeners.
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react"
-import type { CartLine, MenuItem, Order, OrderStatus, PaymentMethod, User } from "@/types"
+import { toast } from "sonner"
+import type { CartLine, DiscountType, MenuItem, Order, OrderStatus, PaymentMethod, User } from "@/types"
+import { computeDiscount, type DiscountBreakdown } from "@/lib/discounts"
+import { sortByCreatedAtDesc } from "@/lib/stats"
 import {
   getMenuItems,
   getOrders,
@@ -20,6 +23,9 @@ import {
   deleteMenuItem as deleteMenuItemAction,
   toggleAvailability as toggleAvailabilityAction,
   resetDemoData as resetDemoDataAction,
+  refundOrder as refundOrderAction,
+  setCashierEnabled as setCashierEnabledAction,
+  createCashierAccount as createCashierAction,
 } from "@/lib/actions"
 
 export const MAX_QTY = 99
@@ -52,7 +58,15 @@ interface Store {
   removeFromCart: (menuItemId: string) => void
   clearCart: () => void
   reorder: (order: Order) => void
-  placeOrder: (cashTendered: number, note?: string) => Promise<Order | null>
+  placeOrder: (cashTendered: number, note?: string, discountType?: DiscountType) => Promise<Order | null>
+  /** Client-side preview of the discount for the current cart. Never persisted directly. */
+  previewDiscount: (type: DiscountType) => DiscountBreakdown
+  /** Issues a refund through the backend. */
+  refundOrder: (orderId: string, amount: number, reason: string) => Promise<{ success: boolean; message: string }>
+  /** Enables/disables a cashier through the backend. */
+  setCashierEnabled: (uid: string, enabled: boolean) => Promise<{ success: boolean; message: string }>
+  /** Creates a cashier account through the backend. Always the cashier role. */
+  createCashier: (name: string, email: string, password: string) => Promise<{ success: boolean; message: string }>
   // admin
   updateOrderStatus: (id: string, status: OrderStatus) => Promise<void>
   saveMenuItem: (item: MenuInput) => Promise<{ success: boolean; message: string }>
@@ -129,6 +143,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const cartCount = cartLines.reduce((s, l) => s + l.qty, 0)
   const cartTotal = cartLines.reduce((s, l) => s + l.qty * l.item.price, 0)
 
+  /**
+   * Newest first, applied once here so every screen that reads `orders` gets the
+   * same order. The admin feed arrives grouped by customer (see flattenOrders in
+   * actions.ts), so without this the board looks randomly sequenced.
+   */
+  const sortedOrders = useMemo(() => sortByCreatedAtDesc(orders), [orders])
+
   const login = async (email: string, password: string): Promise<AuthResult> => {
     const result = await loginUser(email, password)
     if (result.success && result.data) {
@@ -190,13 +211,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   /** Round to 2 decimals so peso maths never drifts on floats (0.1 + 0.2). */
   const money = (n: number) => Math.round(n * 100) / 100
 
-  const placeOrder = async (cashTendered: number, note?: string): Promise<Order | null> => {
+  const placeOrder = async (
+    cashTendered: number,
+    note?: string,
+    discountType: DiscountType = "none"
+  ): Promise<Order | null> => {
     if (!currentUser || cartLines.length === 0) return null
 
-    // The shop is cash-only, so the tender is part of the order record and the
-    // change is derived here rather than trusted from the caller.
+    // The discount is recomputed from the cart here rather than accepted from the
+    // caller, so the persisted total always matches the line items.
+    const breakdown = computeDiscount(
+      cartLines.map((l) => ({ category: l.item.category, qty: l.qty, price: l.item.price })),
+      discountType
+    )
     const tendered = money(cashTendered)
-    const changeGiven = money(tendered - cartTotal)
+    const changeGiven = money(tendered - breakdown.total)
+
+    if (tendered + 0.004 < breakdown.total) {
+      toast.error("Cash received does not cover the total.")
+      return null
+    }
 
     const orderData = {
       customerId: currentUser.id,
@@ -211,11 +245,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         return acc
       }, {} as Record<string, any>),
-      total: cartTotal,
+      subtotal: breakdown.subtotal,
+      discountType: breakdown.type,
+      discountAmount: breakdown.amount,
+      total: breakdown.total,
       paymentMethod: "Cash" as PaymentMethod,
       cashTendered: tendered,
       changeGiven,
-      status: "pending" as OrderStatus,
+      // New orders always start pending; the backend rules enforce it too.
+      status: "pending" as const,
       createdAt: new Date().toISOString(),
       note: note || null,
     }
@@ -252,6 +290,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return toggleAvailabilityAction(id, item.available)
   }
 
+  const previewDiscount = (type: DiscountType): DiscountBreakdown =>
+    computeDiscount(
+      cartLines.map((l) => ({ category: l.item.category, qty: l.qty, price: l.item.price })),
+      type
+    )
+
+  const refundOrder = async (orderId: string, amount: number, reason: string) =>
+    refundOrderAction(orderId, amount, reason)
+
+  const setCashierEnabled = async (uid: string, enabled: boolean) =>
+    setCashierEnabledAction(uid, enabled)
+
+  const createCashier = async (name: string, email: string, password: string) =>
+    createCashierAction(name, email, password)
+
   const resetDemoData = async () => {
     return resetDemoDataAction()
   }
@@ -260,7 +313,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     currentUser,
     users,
     menu,
-    orders,
+    orders: sortedOrders,
     cartLines,
     cartCount,
     cartTotal,
@@ -275,6 +328,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     clearCart,
     reorder,
     placeOrder,
+    previewDiscount,
+    refundOrder,
+    setCashierEnabled,
+    createCashier,
     updateOrderStatus,
     saveMenuItem,
     deleteMenuItem,
