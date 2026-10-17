@@ -1,13 +1,15 @@
+import { useState } from "react"
 import { useNavigate } from "react-router-dom"
-import { History as HistoryIcon, RotateCcw } from "lucide-react"
+import { History as HistoryIcon, Receipt as ReceiptIcon, RotateCcw } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { StatusBadge } from "@/components/StatusBadge"
+import { ReceiptDialog } from "@/components/ReceiptDialog"
 import { useStore } from "@/store/AppStore"
 import { formatDateTime, orderNo, peso } from "@/lib/format"
 import { cn } from "@/lib/utils"
-import type { OrderStatus } from "@/types"
+import type { Order, OrderStatus } from "@/types"
 
 const STEPS: { key: OrderStatus; label: string }[] = [
   { key: "pending", label: "Received" },
@@ -32,7 +34,10 @@ function Progress({ status }: { status: OrderStatus }) {
 
 export default function HistoryPage() {
   const { orders, currentUser, reorder } = useStore()
+  // Receipts and PDFs can include the cashier's name (the transaction record), but no
+  // customer-identifying field is ever printed.
   const navigate = useNavigate()
+  const [receiptFor, setReceiptFor] = useState<Order | null>(null)
   // The store already hands us newest-first; filtering preserves that order.
   const mine = orders.filter((o) => o.customerId === currentUser?.id)
 
@@ -64,14 +69,20 @@ export default function HistoryPage() {
           </ul>
           {o.note && <p className="mt-2 text-xs italic text-muted-foreground">Note: {o.note}</p>}
           {o.status !== "cancelled" && <Progress status={o.status} />}
-          <div className="mt-4 flex items-center justify-between border-t pt-3">
+          <div className="mt-4 flex items-center justify-between gap-2 border-t pt-3">
             <p className="font-bold">Total {peso(o.total)}</p>
-            <Button size="sm" variant="outline" onClick={() => { reorder(o); toast.success("Items added to your order"); navigate("/order") }}>
-              <RotateCcw /> Order again
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => setReceiptFor(o)}>
+                <ReceiptIcon /> Receipt
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => { reorder(o); toast.success("Items added to your order"); navigate("/order") }}>
+                <RotateCcw /> Order again
+              </Button>
+            </div>
           </div>
         </Card>
       ))}
+      <ReceiptDialog order={receiptFor} open={!!receiptFor} onOpenChange={(v) => !v && setReceiptFor(null)} />
     </div>
   )
 }

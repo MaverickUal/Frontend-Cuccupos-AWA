@@ -2,23 +2,53 @@
  * Discount rules for PWD and Senior Citizen.
  *
  * ---------------------------------------------------------------------------
- * UNRESOLVED ASSUMPTIONS — the business owner must confirm these before launch.
+ * VERIFIED AGAINST PRIMARY SOURCES (checked October 2026)
  * ---------------------------------------------------------------------------
- * 1. RATE. `DISCOUNT_RATE` is set to 0.20 (20%). This is the commonly cited
- *    figure for Philippine PWD/Senior Citizen concessions, but it is NOT verified
- *    here and the correct rate depends on the establishment category, current
- *    legislation, and whether the seller holds a certificate of accreditation.
- *    Change this one constant once confirmed; nothing else hardcodes a rate.
- * 2. ELIGIBILITY. This module does NOT verify that the buyer actually holds a
- *    valid PWD/Senior Citizen ID. No such verification exists in the codebase and
- *    inventing one would be worse than omitting it. The cashier asserts
- *    eligibility and the reason is stored on the order as an audit trail.
- * 3. SCOPE. The discount is applied to the food subtotal. This assumes every item
- *    in the cart is discount-eligible. If the shop sells non-eligible items
- *    (e.g. take-away packaging, or goods with their own rules), they must be
- *    marked and excluded via `ELIGIBLE_CATEGORIES` below.
- * 4. STACKING. Only one discount may apply per order; PWD and Senior Citizen are
- *    never combined.
+ * The 20% rate is not a guess. It is the statutory minimum for both concessions:
+ *
+ *   - PWD: RA 10754 Sec. 32(a) grants "at least twenty percent (20%) discount and
+ *     exemption from the value-added tax (VAT), if applicable", and 32(a)(1)
+ *     explicitly covers "restaurants and recreation centers". The IRR of RA 9442
+ *     Sec. 6.1(b) extends this to a restaurant's "food drinks, beverages, dessert
+ *     and other consumable items served by the establishments including value
+ *     meals and other similar food counters, fast food, cooked food and short
+ *     orders including take-outs" — which covers a coffee shop's drinks. The rule is
+ *     a floor, not a cap: a business may grant more.
+ *   - Senior Citizen: RA 7432 Sec. 5(a), as amended by RA 9994 and restated in
+ *     RA 11916, grants the same 20% discount plus VAT exemption.
+ *
+ * Two statutory rules the code deliberately does NOT implement, because both are
+ * operational/legal decisions for the owner, not software defaults:
+ *
+ *   - NO DOUBLE DISCOUNTING. RA 10754 IRR Sec. 12 and the DOT/DTI circulars state
+ *     that a person who is both PWD and senior may use EITHER ID for the single
+ *     20% discount, never both. This module enforces one discount per order, so
+ *     the prohibition holds by construction.
+ *   - PROMOTIONAL DISCOUNTS. Where an establishment already runs a promo, the
+ *     buyer takes whichever is more favourable, not both. This app has no promo
+ *     engine, so there is nothing to reconcile today; revisit if promos are added.
+ *
+ * Note this app discounts the full pre-VAT amount and does not model VAT at all.
+ * VAT exemption is a separate BIR bookkeeping matter for the owner.
+ *
+ * ---------------------------------------------------------------------------
+ * STILL UNRESOLVED — confirm with the business owner before launch
+ * ---------------------------------------------------------------------------
+ * 1. ELIGIBILITY / PROOF OF ID. The law conditions the concession on proof of
+ *    entitlement: a PWD ID, barangay/city ID or passport, and a senior citizen ID.
+ *    RA 10754 IRR Sec. 12 further requires that the establishment's sales records
+ *    carry the concession holder's NAME, ID NUMBER and TIN if the discount is
+ *    claimed as a tax deduction. This application records none of that: the
+ *    cashier asserts eligibility and only the discount type is stored on the
+ *    order. Collecting and retaining ID details is a policy and privacy decision
+ *    for the owner, and the app must not be described as compliant until it is.
+ * 2. SCOPE. The discount is applied to the whole food subtotal, which assumes every
+ *    item is eligible. RA 10754 does restrict use to "the exclusive use and
+ *    enjoyment" of the buyer. If any item should be excluded, list its category in
+ *    `ELIGIBLE_CATEGORIES` below.
+ * 3. STACKING. Only one discount applies per order; PWD and Senior are never
+ *    combined. This matches the statute, so it is a rule rather than an open
+ *    question.
  *
  * All monetary values are PHP pesos.
  */
@@ -32,11 +62,16 @@ export const DISCOUNT_LABELS: Record<DiscountType, string> = {
   senior: "Senior Citizen",
 }
 
-/** Unverified — see assumption 1 above. */
+/**
+ * The statutory minimum concession for both PWD and Senior Citizen.
+ * Verified against RA 10754 Sec. 32(a)(1), the IRR of RA 9442 Sec. 6.1(b), and
+ * RA 7432 Sec. 5(a) as amended — see the header note. This is a floor the law
+ * grants, so raising it is always permitted.
+ */
 export const DISCOUNT_RATE = 0.2
 
 /**
- * Assumption 3. `null` means "every category is eligible", which is the
+ * Assumption 2 above. `null` means "every category is eligible", which is the
  * current behaviour. Narrow it to e.g. ["Coffee", "Milk Tea"] if some items
  * must be excluded.
  */

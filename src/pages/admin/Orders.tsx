@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react"
-import { Search, Undo2 } from "lucide-react"
+import { Search, Undo2, Receipt } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { StatusBadge } from "@/components/StatusBadge"
 import { RefundDialog } from "@/components/RefundDialog"
+import { ReceiptDialog } from "@/components/ReceiptDialog"
 import { useStore } from "@/store/AppStore"
 import { formatDateTime, orderNo, peso } from "@/lib/format"
 import { remainingRefundable } from "@/lib/finance"
@@ -31,6 +32,7 @@ export default function AdminOrders() {
   const [search, setSearch] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [refundOpen, setRefundOpen] = useState(false)
+  const [receiptOpen, setReceiptOpen] = useState(false)
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: orders.length }
@@ -165,6 +167,9 @@ export default function AdminOrders() {
               )}
 
               <DialogFooter>
+                <Button variant="outline" onClick={() => setReceiptOpen(true)}>
+                  <Receipt /> Receipt
+                </Button>
                 {selected.status !== "cancelled" && remainingRefundable(selected) > 0.004 && (
                   <Button variant="outline" onClick={() => setRefundOpen(true)}>
                     <Undo2 /> Refund
@@ -183,6 +188,7 @@ export default function AdminOrders() {
       </Dialog>
 
       <RefundDialog order={selected} open={refundOpen} onOpenChange={setRefundOpen} />
+      <ReceiptDialog order={selected} open={receiptOpen} onOpenChange={setReceiptOpen} />
     </div>
   )
 }

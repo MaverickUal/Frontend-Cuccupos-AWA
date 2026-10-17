@@ -47,6 +47,9 @@
               ".write": false,
               ".validate": false
             }
+          },
+          "refundedTotal": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0)"
           }
         }
       }

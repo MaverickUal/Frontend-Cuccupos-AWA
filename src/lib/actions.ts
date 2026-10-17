@@ -27,6 +27,8 @@ import {
 } from "firebase/auth"
 import { z } from "zod"
 import { computeDiscount } from "@/lib/discounts"
+import { findConflictingMenuItems } from "@/lib/duplicates"
+import type { MenuItem } from "@/types"
 import { requestRefund as refundOrderFn, createCashier as createCashierFn, setCashierEnabled as setCashierEnabledFn } from "@/lib/functionsClient"
 
 // ---------------------------------------------------------------------------
@@ -158,6 +160,10 @@ export const userSchema = z.object({
 
 /**
  * Add a new menu item (push)
+ *
+ * Duplicate names are refused here, at the data-access layer, rather than only in the
+ * form: a second caller cannot slip past the UI check. The rule and its limits live in
+ * src/lib/duplicates.ts.
  */
 export const addMenuItem = async (itemData: z.infer<typeof menuItemSchema>) => {
   try {
@@ -166,6 +172,15 @@ export const addMenuItem = async (itemData: z.infer<typeof menuItemSchema>) => {
       return {
         success: false,
         message: validation.error.issues[0]?.message || "Invalid menu item data",
+      }
+    }
+
+    const existing = await getMenuItemsOnce()
+    const clashes = findConflictingMenuItems(existing, validation.data.name, validation.data.category)
+    if (clashes.length > 0) {
+      return {
+        success: false,
+        message: `A ${validation.data.category} product named "${validation.data.name}" already exists. Edit or rename it instead of adding a second one.`,
       }
     }
 
@@ -186,18 +201,16 @@ export const addMenuItem = async (itemData: z.infer<typeof menuItemSchema>) => {
 /**
  * Get all menu items in real-time (onValue)
  * Returns an unsubscribe function.
+ *
+ * Uses `val()` rather than `snapshot.forEach()` for the same reason as getMenuItemsOnce:
+ * the priority-index traversal behind `forEach` can return a truncated child list, which
+ * would silently hide products from the menu and from duplicate review.
  */
-export const getMenuItems = (callback: (items: any[]) => void) => {
+export const getMenuItems = (callback: (items: MenuItem[]) => void) => {
   try {
     const unsubscribe = onValue(menuRef, (snapshot) => {
-      const itemsArray: any[] = []
-      snapshot.forEach((snap) => {
-        const itemData = snap.val()
-        const id = snap.key
-        const itemWithId = { id, ...itemData }
-        itemsArray.push(itemWithId)
-      })
-      callback(itemsArray)
+      const raw = (snapshot.val() ?? {}) as Record<string, any>
+      callback(Object.entries(raw).map(([id, value]) => ({ id, ...(value as object) })) as MenuItem[])
     })
     return unsubscribe
   } catch (error: any) {
@@ -208,17 +221,16 @@ export const getMenuItems = (callback: (items: any[]) => void) => {
 
 /**
  * Get all menu items once (get)
+ *
+ * Reads through `val()` rather than `snapshot.forEach()`. The two are equivalent for
+ * well-formed nodes, but the priority-index traversal behind `forEach` can hand back a
+ * short list, whereas `val()` returns the whole node. This sits on the duplicate check's
+ * path, so a truncated read there would mean a missed collision.
  */
-export const getMenuItemsOnce = async () => {
+export const getMenuItemsOnce = async (): Promise<MenuItem[]> => {
   const snapshot = await get(menuRef)
-  const itemsArray: any[] = []
-  snapshot.forEach((snap) => {
-    const itemData = snap.val()
-    const id = snap.key
-    const itemWithId = { id, ...itemData }
-    itemsArray.push(itemWithId)
-  })
-  return itemsArray
+  const raw = (snapshot.val() ?? {}) as Record<string, any>
+  return Object.entries(raw).map(([id, value]) => ({ id, ...(value as object) })) as MenuItem[]
 }
 
 /**
@@ -256,9 +268,26 @@ export const getMenuItemsByCategory = async (category: string) => {
 
 /**
  * Update a menu item
+ *
+ * Renaming into a name that already exists in the same category is refused. The item
+ * being edited is excluded, so saving an unchanged product never flags itself, and
+ * changing only the price/description never triggers a check at all.
  */
 export const updateMenuItem = async (id: string, itemData: Partial<z.infer<typeof menuItemSchema>>) => {
   try {
+    const name = itemData.name
+    const category = itemData.category
+    if (name !== undefined && category !== undefined) {
+      const existing = await getMenuItemsOnce()
+      const clashes = findConflictingMenuItems(existing, name, category, id)
+      if (clashes.length > 0) {
+        return {
+          success: false,
+          message: `A ${category} product named "${name}" already exists. Pick a different name or edit that item instead.`,
+        }
+      }
+    }
+
     const updateReference = ref(database, `menu/${id}`)
     await update(updateReference, itemData as any)
     return {
@@ -500,6 +529,29 @@ export const loginUser = async (email: string, password: string) => {
     }
 
     const userData = profileSnap.val()
+
+    // A disabled account is refused at sign-in even if the Firebase credentials are
+    // still valid. `setCashierEnabled` also sets an auth custom claim, but that claim
+    // is only refreshed on a new token, so the database flag is the reliable check.
+    if (userData.disabled === true) {
+      await signOut(auth)
+      return {
+        success: false,
+        message: "This account has been disabled. Ask the Owner/Manager to re-enable it.",
+      }
+    }
+
+    // Reject a profile whose role is missing or unrecognised. Without this, a
+    // cast would turn any string into a "valid" user and the app would quietly
+    // treat a broken record as a cashier.
+    if (userData.role !== "admin" && userData.role !== "cashier") {
+      await signOut(auth)
+      return {
+        success: false,
+        message: "Your account role is not set correctly. Ask the Owner/Manager to fix it.",
+      }
+    }
+
     return {
       success: true,
       message: "Login successful",

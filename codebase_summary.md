@@ -24,7 +24,7 @@ This file describes **how the code is organised**. For what the system *does* an
 | Validation | Zod | 4.6 |
 | Tests | Vitest | 2.1 |
 
-~5,570 lines of TypeScript/TSX across 47 source files, of which ~935 are tests.
+~7,350 lines of TypeScript/TSX across 56 source files, of which ~1,610 are tests (10 suites, 200 cases).
 
 ---
 
@@ -55,10 +55,13 @@ This file describes **how the code is organised**. For what the system *does* an
     │   ├── functionsClient.ts Callables to the Cloud Functions
     │   ├── stats.ts          Date ranges, bucketing, sorting, aggregates
     │   ├── finance.ts        Gross / refunds / net, refundable amount
-    │   ├── discounts.ts      Discount maths + documented assumptions
+    │   ├── discounts.ts      Discount maths + statutory basis and open assumptions
+    │   ├── duplicates.ts     Product-name normalization + duplicate detection
+    │   ├── receipt.ts        Pure single-transaction receipt model + filenames
+    │   ├── roles.ts          "admin" → Owner/Manager, "cashier" → Cashier
     │   ├── format.ts         Peso/date formatting + orderNo()
     │   ├── utils.ts          cn() class merger
-    │   ├── __tests__/        5 suites, 110 tests
+    │   ├── __tests__/        10 suites, 200 tests
     │   └── firebase_structure.md   Data model + rules + deployment notes
     │
     ├── components/
@@ -66,8 +69,9 @@ This file describes **how the code is organised**. For what the system *does* an
     │   ├── RangePicker.tsx   Shared period selector (dashboard + reports)
     │   ├── DiscountPicker.tsx  PWD / Senior Citizen selector
     │   ├── RefundDialog.tsx  Owner/Manager refund with confirmation
+    │   ├── ReceiptDialog.tsx  Print + PDF export for one transaction
     │   ├── StatusBadge.tsx   Order status → colour
-    │   ├── QuantityStepper.tsx
+    │   ├── QuantityStepper.tsx  +/- plus a typed quantity field
     │   ├── MenuImage.tsx     Image with placeholder fallback
     │   ├── Logo.tsx          Placeholder mark
     │   └── ui/               10 shadcn primitives
@@ -106,7 +110,7 @@ Privileged operations take a second path through `functionsClient.ts`, because r
 
 ### Pure logic modules
 
-`stats.ts`, `finance.ts` and `discounts.ts` have no Firebase import at all. That is what makes the test suite fast and deterministic — no emulator, no credentials.
+`stats.ts`, `finance.ts`, `discounts.ts`, `duplicates.ts`, `receipt.ts` and `roles.ts` have no Firebase import at all. That is what makes the test suite fast and deterministic — no emulator, no credentials. `parseQty` is the one tested export in `components/`, deliberately kept next to the input that uses it.
 
 ### Layer 1 — `lib/actions.ts`
 
@@ -168,7 +172,7 @@ Guards live in `App.tsx`: `RequireRole`, `PublicOnly`, `RootRedirect`, all gated
 - **Styling** — Tailwind utilities plus `cn()` for conditional classes. Theme colours are CSS variables at the top of `index.css`; there is no dark mode.
 - **Icons** — lucide-react only.
 - **Money** — rounded to 2 decimals (`money()` in the store, `round2` in the pure modules) to avoid float drift. Never accept a total from a caller; recompute it.
-- **Testing** — `npm test` runs 110 unit tests over the pure modules (`stats`, `finance`, `discounts`) and the order schema. `npm run test:tz` re-runs them in four timezones, because date logic is the most likely thing to break.
+- **Testing** — `npm test` runs 200 unit tests over the pure modules (`stats`, `finance`, `discounts`, `duplicates`, `receipt`, `roles`), the quantity parser, the dashboard filter logic and the order schema. `npm run test:tz` re-runs them in four timezones, because date logic is the most likely thing to break.
 - **Where the split is** — the browser owns reads and ordinary writes; Cloud Functions own anything privileged (refunds, account creation, account disabling). If a change needs the Admin SDK or an atomic multi-node check, it belongs in `functions/`, not `actions.ts`.
 
 ---
@@ -180,7 +184,7 @@ Guards live in `App.tsx`: `RequireRole`, `PublicOnly`, `RootRedirect`, all gated
 3. **Single-field writes need `set()`, not `update()`.** `update()` throws on a primitive in Firebase v9+.
 4. **Order numbers are client-generated** (`ORD-MVC26YJ9`, `makeDisplayId()`). A shared counter would need customers to write to `/counters`, which can't be made safe.
 5. **Money is recomputed, never trusted.** `orderSchema` re-derives subtotal, discount and total from the line items and rejects anything that doesn't reconcile. Change the maths in `discounts.ts`, not in the caller.
-6. **The discount rate is an unverified assumption.** `DISCOUNT_RATE` in `discounts.ts` was not checked against legislation. Confirm it before going live; the other open assumptions are documented in that file's header.
+6. **The discount rate is verified; the eligibility evidence is not.** `DISCOUNT_RATE = 0.2` matches RA 10754 Sec. 32(a)(1) (PWD) and RA 7432 Sec. 5(a) as amended (Senior Citizen), both of which cover a coffee shop. The app does not record the ID proof the law requires to claim the discount as a tax deduction — see the header of `discounts.ts`.
 7. **Refunds and account management need Cloud Functions.** Client-side checks are advisory — anyone can call the RTDB SDK from devtools. Don't move them to `actions.ts`.
 8. **The admin feed arrives grouped by cashier**, not chronologically. `sortByCreatedAtDesc` in the store is what fixes the ordering — don't assume `orders` is already sorted at the data layer.
 9. **`parseDayInput` rejects impossible dates deliberately.** Re-adding plain `new Date(y, m, d)` reintroduces the silent Feb 31 → Mar 3 bug.
@@ -195,7 +199,7 @@ npm install
 cp .env.example .env.local    # then fill in the Firebase values
 npm run dev                   # http://localhost:5173
 npm run build                 # tsc --noEmit && vite build
-npm test                      # 110 unit tests
+npm test                      # 200 unit tests
 npm run test:tz               # same suite across four timezones
 ```
 
