@@ -47,12 +47,22 @@ one; the screen then shows **subtotal → discount → total → cash → change
 anything is committed. The order stores `subtotal`, `discountType`,
 `discountAmount` and `total` so the arithmetic can be audited later.
 
-> **The rate and eligibility rules are unresolved.** `DISCOUNT_RATE` is set to 20%
-> as a configurable placeholder and has **not** been verified against Philippine
-> requirements. No ID verification is implemented — the cashier asserts
-> eligibility and the reason is stored on the order. All four assumptions are
-> listed in the header of `src/lib/discounts.ts`. **Confirm them with the business
-> owner before going live.**
+> **The 20% rate is confirmed by statute; ID capture is not implemented.**
+> RA 10754 Sec. 32(a)(1) grants PWD a discount of "at least twenty percent (20%)"
+> explicitly covering "restaurants and recreation centers", and the IRR of RA 9442
+> Sec. 6.1(b) extends it to a restaurant's "food drinks, beverages, dessert and
+> other consumable items". RA 7432 Sec. 5(a), as amended by RA 9994 and restated in
+> RA 11916, grants Senior Citizens the same 20%. So `DISCOUNT_RATE = 0.2` is a legal
+> floor, not a guess — raising it is always allowed.
+>
+> What the law also requires and **this app does not do**: proof of entitlement.
+> RA 10754 IRR Sec. 12 says sales records must carry the concession holder's name,
+> ID number and TIN for the discount to be claimed as a tax deduction. The app
+> records only the discount *type*; the cashier asserts eligibility. Collecting ID
+> details is a privacy and policy decision for the owner, and until it is done the
+> app must not be described as compliant. One discount per order is enforced, which
+> satisfies the statutory ban on double-discounting a person who is both PWD and
+> Senior Citizen. VAT is not modelled at all — that is separate BIR bookkeeping.
 
 ### Refunds
 
@@ -71,12 +81,12 @@ write happens in a Cloud Function transaction, not optimistically in the UI.
 | Screen | Purpose |
 |---|---|
 | **Dashboard** | Sales/order/average for a chosen period, sales chart, best sellers, recent orders — filterable by cashier |
-| **Orders** | Every order newest-first with status filters and search; advance status, cancel, view details, refund |
-| **Menu** | Add, edit, delete items; sold-out toggle |
-| **Cashiers** | Each cashier's order count and last order; create accounts, disable access |
+| **Orders** | Every order newest-first with status filters and search; advance status, cancel, view details, refund, print/export receipt |
+| **Menu** | Add, edit, delete items; sold-out toggle; duplicate-name review |
+| **Cashiers** | Every staff account with its role, order count and last order; create cashier accounts, disable access |
 | **Reports** | Period report — gross / refunds / net, chart, category split, top items, refund audit, CSV export, print/PDF |
-| **Order** (cashier) | Menu browse, cart, cash checkout with discount |
-| **History** (cashier) | Own orders newest-first, live status bar, reorder |
+| **Order** (cashier) | Menu browse, cart with typed quantity, cash checkout with discount |
+| **History** (cashier) | Own orders newest-first, live status bar, receipt/PDF, reorder |
 
 ### Filtering the dashboard by cashier
 
@@ -105,7 +115,7 @@ Choosing today (including via Custom) switches to hourly automatically. KPIs and
 
 | Rule | Where it's enforced |
 |---|---|
-| Cart quantity is 1–99 | `QuantityStepper` disables at the bounds; store clamps |
+| Cart quantity is 1–99 | `parseQty` clamps typed input; `QuantityStepper` disables at the bounds; store clamps; `orderSchema` rejects out-of-range |
 | Sold-out items cannot be ordered | Client checks `available`; store rejects |
 | Orders always start `pending` | `orderSchema` and the security rules both reject any other status at creation |
 | Cancelled orders count as zero everywhere | `validOrders()` filters them out of all sales figures |
@@ -120,6 +130,11 @@ Choosing today (including via Custom) switches to hourly automatically. KPIs and
 | Nobody self-promotes to admin | `role` validation rule, and there is no UI to do it |
 | An admin cannot disable their own account | Guarded in the function and the UI |
 | Discount applied at most once | Recomputed from line items, never accepted from the caller |
+| Only one discount per order | `discountType` is a single enum; PWD and Senior are never combined (also satisfies the statutory ban) |
+| No duplicate product name within a category | `findConflictingMenuItems` in `actions.ts` add/update paths; existing duplicates listed for review only |
+| An account with no valid role cannot sign in | `loginUser` refuses and signs out; `roleLabel` shows it as "Unknown" |
+| A disabled account cannot sign in | `loginUser` checks `disabled`, backed by the auth custom claim |
+| A print or PDF contains one transaction | `buildReceipt(order)` is a pure per-order function; `public/receipt.css` hides everything but the receipt element |
 
 ---
 
@@ -174,17 +189,19 @@ Stated plainly rather than buried:
 
 1. **Prices are still client-supplied.** The schema now recomputes subtotal, discount and total from the line items and rejects a mismatch, and the rules cap quantity at 1–99 — but nothing checks `items[].price` against the live menu. A modified client could send `price: 1` for a ₱80 drink. Closing this properly means computing orders server-side in a Cloud Function, which would move order creation off the current path. **Not acceptable once real money is involved; acceptable while payment is a mock.**
 
-2. **The discount rate is unverified.** 20% is a configurable placeholder, not a confirmed legal rate. No ID verification is implemented. See `src/lib/discounts.ts`.
+2. **Discount entitlement is not evidenced.** The 20% rate is now verified against RA 10754 Sec. 32(a)(1) and RA 7432 Sec. 5(a) as amended. What is missing is proof: the law requires the concession holder's name, ID number and TIN on the sales record before the discount can be claimed as a tax deduction, and the app stores only the discount type. The owner must decide whether to capture ID details — that is a privacy decision, not a code default. See `src/lib/discounts.ts`.
 
 3. **Cloud Functions are written but not deployed.** Refunds and cashier account management exist and compile, but are inert until `npm run deploy:functions` runs. Until then the UI reports the feature as unavailable rather than simulating it.
 
 4. **An admin can still demote themselves.** The rules stop a cashier self-promoting and the account-management function refuses self-disabling, but an admin editing their own `role` directly is allowed by the rules. There is no UI that does it, so it only matters if someone edits the database by hand.
 
-5. **No integration or emulator tests.** The pure logic is covered by 110 unit tests, but the Cloud Functions and the security rules are only verified by compiling and by manual browser checks against the live database.
+5. **No integration or emulator tests.** The pure logic is covered by 200 unit tests, but the Cloud Functions and the security rules are only verified by compiling and by manual browser checks against the live database.
 
 6. **Orders never paginate properly.** The board caps at 100 rows and says so; older orders are still reachable by search.
 
 7. **No offline support.** Losing connection mid-shift means losing the cart and failing checkouts.
+
+8. **No four-digit PIN login.** Scoped and then deliberately dropped. A 4-digit PIN is only 10,000 values, so it is only defensible with a salted scrypt hash held in a rules-locked node read solely by the Admin SDK, per-account lockout, and an IP throttle — and every one of those would need deploying to be verified. No UI was added. The design, if wanted later: `pinCredentials/<uid>` denied to all clients, `setCashierPin` callable by the signed-in owner of the PIN, `pinLogin` issuing a Firebase session only after server-side verification, `MAX_ATTEMPTS = 5` then a 5-minute lockout, and admins excluded. Email/password stays the only method today.
 
 ---
 

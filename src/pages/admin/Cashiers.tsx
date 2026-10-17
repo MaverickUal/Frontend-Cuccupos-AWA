@@ -11,11 +11,18 @@ import { Switch } from "@/components/ui/switch"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { useStore } from "@/store/AppStore"
 import { formatDate } from "@/lib/format"
+import { roleLabel } from "@/lib/roles"
 
 interface Row {
   id: string
   name: string
   email?: string
+  /**
+   * The role as stored on the user record. Kept as a string, not `Role`, so an
+   * unexpected or missing value surfaces as "Unknown" in the UI instead of being
+   * silently coerced into looking like a valid role.
+   */
+  role?: string
   orders: number
   last?: string
   disabled: boolean
@@ -28,18 +35,19 @@ export default function AdminCashiers() {
 
   const rows = useMemo(() => {
     const map = new Map<string, Row>()
-    // Cashiers are the non-admin staff accounts; the owner/manager is excluded.
-    users
-      .filter((u) => u.role === "cashier")
-      .forEach((u) =>
-        map.set(u.id, {
-          id: u.id,
-          name: u.name,
-          email: u.email,
-          orders: 0,
-          disabled: (u as { disabled?: boolean }).disabled === true,
-        })
-      )
+    // Every staff account is listed, not just cashiers. An administrator has to be
+    // able to see who holds which role, and an account with a missing or unrecognised
+    // role still needs to be visible so it can be fixed.
+    users.forEach((u) =>
+      map.set(u.id, {
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        role: u.role,
+        orders: 0,
+        disabled: (u as { disabled?: boolean }).disabled === true,
+      })
+    )
     // Orders placed by a since-removed account still surface, so the audit trail
     // is never silently shortened.
     orders.forEach((o) => {
@@ -51,14 +59,21 @@ export default function AdminCashiers() {
     const q = search.trim().toLowerCase()
     return [...map.values()]
       .filter((r) => !q || r.name.toLowerCase().includes(q) || r.email?.toLowerCase().includes(q))
-      .sort((a, b) => Number(a.disabled) - Number(b.disabled) || b.orders - a.orders)
+      .sort(
+        (a, b) =>
+          Number(a.disabled) - Number(b.disabled) ||
+          roleLabel(a.role).localeCompare(roleLabel(b.role)) ||
+          b.orders - a.orders
+      )
   }, [users, orders, search])
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          {rows.filter((r) => !r.disabled).length} active · {rows.filter((r) => r.disabled).length} disabled
+          {rows.filter((r) => r.role === "cashier" && !r.disabled).length} active cashiers ·{" "}
+          {rows.filter((r) => r.role === "admin").length} Owner/Manager ·{" "}
+          {rows.filter((r) => r.disabled).length} disabled
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <div className="relative w-full sm:w-60">
@@ -75,7 +90,8 @@ export default function AdminCashiers() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Cashier</TableHead>
+              <TableHead>Staff</TableHead>
+              <TableHead>Role</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Status</TableHead>
               <TableHead className="text-right">Orders</TableHead>
@@ -85,10 +101,11 @@ export default function AdminCashiers() {
           </TableHeader>
           <TableBody>
             {rows.length === 0 && (
-              <TableRow><TableCell colSpan={6} className="py-12 text-center text-muted-foreground">No cashiers found.</TableCell></TableRow>
+              <TableRow><TableCell colSpan={7} className="py-12 text-center text-muted-foreground">No staff accounts found.</TableCell></TableRow>
             )}
             {rows.map((r) => {
               const isSelf = r.id === currentUser?.id
+              const isOwner = r.role === "admin"
               return (
                 <TableRow key={r.id}>
                   <TableCell className="font-semibold">
@@ -97,6 +114,11 @@ export default function AdminCashiers() {
                       {isSelf && <Badge variant="secondary">You</Badge>}
                     </span>
                   </TableCell>
+                  <TableCell>
+                    {/* Admin rows are named in full so an Owner/Manager is never shown
+                        as if they were just another cashier. */}
+                    <Badge variant={isOwner ? "default" : "tag"}>{roleLabel(r.role)}</Badge>
+                  </TableCell>
                   <TableCell>{r.email ?? <Badge variant="secondary">No account</Badge>}</TableCell>
                   <TableCell>
                     {r.disabled ? <Badge variant="destructive">Disabled</Badge> : <Badge variant="secondary">Active</Badge>}
@@ -104,7 +126,7 @@ export default function AdminCashiers() {
                   <TableCell className="text-right">{r.orders}</TableCell>
                   <TableCell className="text-muted-foreground">{r.last ? formatDate(r.last) : "No orders yet"}</TableCell>
                   <TableCell className="text-right">
-                    {r.email ? (
+                    {r.email && !isOwner ? (
                       <Switch
                         checked={!r.disabled}
                         disabled={isSelf}
@@ -112,7 +134,9 @@ export default function AdminCashiers() {
                         aria-label={`${r.disabled ? "Re-enable" : "Disable"} ${r.name}`}
                       />
                     ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
+                      <span className="text-xs text-muted-foreground">
+                        {isOwner ? "Managed in console" : "—"}
+                      </span>
                     )}
                   </TableCell>
                 </TableRow>
@@ -124,7 +148,9 @@ export default function AdminCashiers() {
 
       <p className="text-xs text-muted-foreground">
         Disabling a cashier blocks sign-in but keeps their orders and refunds intact for the audit trail.
-        You can't disable your own account, so the shop always keeps an administrator.
+        You can't disable your own account, so the shop always keeps an administrator. Accounts are
+        managed by role, not deleted — promoting someone to Owner/Manager is a deliberate act done in
+        the Firebase console, not from this screen.
       </p>
 
       <CreateCashierDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={createCashier} />

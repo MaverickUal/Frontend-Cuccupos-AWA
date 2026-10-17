@@ -227,12 +227,16 @@ published (or the command above run) for anything here to take effect.
               ".write": false,
               ".validate": false
             }
+          },
+          "refundedTotal": {
+            ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0)"
           }
         }
       }
     }
   }
 }
+
 ```
 
 ### Why `orders/.../refunds` is unwritable from any client
@@ -347,33 +351,35 @@ field is likewise locked to the caller's own auth token email.
 
 | Business Rule | How It's Enforced |
 |---------------|-------------------|
-| Cart quantity clamped to 1–99 | Client-side validation in `QuantityStepper` and `AppStore`. Server-side: `.validate` on order items. |
+| Cart quantity clamped to 1–99 | `parseQty` in `QuantityStepper` clamps typed and stepped values; `setQty` in `AppStore` clamps again; `orderSchema` in `actions.ts` rejects out-of-range values. Server-side: `.validate` on order items requires `qty` 1–99. |
+| No duplicate product names | `findConflictingMenuItems` in `src/lib/duplicates.ts`, enforced in `addMenuItem`/`updateMenuItem` so a non-UI caller cannot bypass it. Matching is by normalized name **and** category (case, surrounding and repeated whitespace folded). Existing duplicates are listed for admin review and never auto-merged or deleted. |
 | Sold-out items can't be ordered | Client-side check in `addToCart`. Server-side: validate `menu/<id>/available` is `true` at order creation (requires a Cloud Function for full enforcement). |
 | Orders start as `pending` | Client sets `status: "pending"` on create. |
 | Cancelled orders excluded from sales | `validOrders()` in `src/lib/stats.ts` filters out `status === "cancelled"`. |
 | Only admins can change order status | Security rules: only admins can update existing orders. |
 | Customers only see their own orders | Orders are nested at `/orders/<customerId>/`, so a cashier's read of their own subtree is the only one the rules grant them. |
 | Passwords are never stored in DB | Firebase Auth handles authentication. The `users` node contains no password field. |
+| Only `cashier` or `admin` are valid roles | `role` `.validate` in `database.rules.json`; `loginUser` in `actions.ts` refuses to sign in a profile whose role is missing or unrecognised; `roleLabel` in `src/lib/roles.ts` shows such an account as "Unknown" rather than mislabelling it. |
+| Disabled accounts cannot sign in | `loginUser` rejects a profile with `disabled === true` and signs the session back out. `setCashierEnabled` also sets an auth custom claim. |
+| Refunds are Owner/Manager-only and appended atomically | `refundOrder` Cloud Function re-reads the caller's role, then runs a transaction on the order. `orders/*/*/refunds` has `".write": false` in the rules, so no client can write one. |
 
 ---
 
 ## Indexes
 
-For efficient querying, add these indexes in the Firebase console:
+**None are required.** Every database read the app performs is an unfiltered path read —
+`onValue(/menu)`, `onValue(/orders)`, `onValue(/orders/<uid>)`, `get(/users/<uid>)` — and
+those never need an index.
 
-```json
-{
-  "orders": {
-    ".indexOn": ["customerId", "status", "createdAt"]
-  }
-}
-```
+`src/lib/actions.ts` still contains `getMenuItemByName` and `getMenuItemsByCategory`, which
+use `orderByChild` and *would* need `.indexOn: ["name"]` and `.indexOn: ["category"]` under
+`menu`. Both are dead code: no page calls them, because the UI filters the already-loaded
+menu client-side instead.
 
-| Index | Use Case |
-|-------|----------|
-| `customerId` | Fetch all orders for a specific customer |
-| `status` | Filter orders by status, e.g. everything still `pending` |
-| `createdAt` | Sort orders by date (reports, history) |
+They are also wrong to wire up as-is. With orders nested under a customer id, a server-side
+`orderByChild` at `/orders` compares whole cashiers rather than individual orders, which is
+why no `.indexOn` appears in `database.rules.json`. If those helpers are ever revived, add
+the two indexes under `menu` at the same time.
 
 ---
 

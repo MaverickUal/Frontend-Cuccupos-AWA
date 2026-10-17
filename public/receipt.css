@@ -1,0 +1,46 @@
+/**
+ * Print-only stylesheet for single-transaction receipts.
+ *
+ * Strategy: while printing, everything on the page is hidden except `.receipt-sheet`
+ * (and any other explicitly marked print region). This is what guarantees a print is
+ * limited to the selected transaction — the nav, filters, tables and dialog buttons are
+ * not hidden one by one, so nothing new added to the app can leak into a receipt by
+ * omission.
+ *
+ * The dialog's scroll container is unwrapped for print (max-height/overflow removed)
+ * so a tall receipt prints on one continuous page instead of being cut off.
+ */
+@media print {
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .receipt-sheet,
+  .receipt-sheet * {
+    visibility: visible !important;
+  }
+
+  .receipt-sheet {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-height: none !important;
+    overflow: visible !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    box-shadow: none !important;
+  }
+
+  /* Chrome/Edge add headers and footers by default. */
+  @page {
+    margin: 10mm;
+  }
+}
