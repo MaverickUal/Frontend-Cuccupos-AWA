@@ -1,13 +1,24 @@
-export type Role = "customer" | "admin"
+/**
+ * Staff accounts only — customers are walk-ins and never sign in.
+ *   admin   -> owner/manager (full dashboard, menu + staff management)
+ *   cashier -> takes orders and records cash at the counter
+ * These values are what lives in `users/<uid>/role` in the database, and the
+ * security rules in src/lib/firebase_structure.md validate against them.
+ */
+export type Role = "cashier" | "admin"
 export type Category = "Coffee" | "Milk Tea" | "Frappe" | "Others"
 export type OrderStatus = "pending" | "preparing" | "ready" | "completed" | "cancelled"
-export type PaymentMethod = "Cash" | "GCash" | "Card"
+
+/**
+ * The shop is cash-only for now. Widen this union (and the matching zod schema in
+ * src/lib/actions.ts) if another tender type is added back.
+ */
+export type PaymentMethod = "Cash"
 
 export interface User {
   id: string
   name: string
   email: string
-  password: string // mock only. The real backend must hash passwords.
   role: Role
   createdAt: string
 }
@@ -33,11 +44,17 @@ export interface OrderItem {
 
 export interface Order {
   id: string
+  /** Friendly order number ("ORD-…") generated at checkout. */
+  displayId?: string
   customerId: string
   customerName: string
-  items: OrderItem[]
+  items: Record<string, OrderItem>
   total: number
   paymentMethod: PaymentMethod
+  /** Cash handed over by the customer. Cash-only shop, so this is always recorded. */
+  cashTendered?: number
+  /** Change returned to the customer: cashTendered - total. */
+  changeGiven?: number
   status: OrderStatus
   createdAt: string
   note?: string

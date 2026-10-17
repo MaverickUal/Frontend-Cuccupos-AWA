@@ -8,7 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { StatusBadge } from "@/components/StatusBadge"
 import { useStore } from "@/store/AppStore"
-import { formatDateTime, peso } from "@/lib/format"
+import { formatDateTime, orderNo, peso } from "@/lib/format"
 import { cn } from "@/lib/utils"
 import type { OrderStatus } from "@/types"
 
@@ -34,14 +34,15 @@ export default function AdminOrders() {
 
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase()
-    return orders.filter((o) => (filter === "all" || o.status === filter) && (!q || o.id.toLowerCase().includes(q) || o.customerName.toLowerCase().includes(q)))
+    return orders.filter((o) => (filter === "all" || o.status === filter) && (!q || orderNo(o).toLowerCase().includes(q) || o.customerName.toLowerCase().includes(q)))
   }, [orders, filter, search])
 
   const selected = orders.find((o) => o.id === selectedId) ?? null
 
-  function advance(id: string, status: OrderStatus, name: string) {
-    updateOrderStatus(id, status)
-    toast.success(`${id} · ${name}`)
+  async function advance(id: string, status: OrderStatus, name: string) {
+    await updateOrderStatus(id, status)
+    const order = orders.find((o) => o.id === id)
+    toast.success(`${order ? orderNo(order) : id} · ${name}`)
   }
 
   return (
@@ -62,7 +63,7 @@ export default function AdminOrders() {
         </div>
         <div className="relative w-full sm:w-72">
           <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input aria-label="Search orders" className="pl-9" placeholder="Search by order ID or customer…" value={search} onChange={(e) => setSearch(e.target.value)} />
+          <Input aria-label="Search orders" className="pl-9" placeholder="Search by order number or cashier…" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
       </div>
 
@@ -70,7 +71,7 @@ export default function AdminOrders() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Order</TableHead><TableHead>Customer</TableHead><TableHead>Items</TableHead><TableHead>Placed</TableHead>
+              <TableHead>Order</TableHead><TableHead>Cashier</TableHead><TableHead>Items</TableHead><TableHead>Placed</TableHead>
               <TableHead>Payment</TableHead><TableHead className="text-right">Total</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
@@ -80,9 +81,9 @@ export default function AdminOrders() {
               const next = NEXT[o.status]
               return (
                 <TableRow key={o.id}>
-                  <TableCell className="font-semibold">{o.id}</TableCell>
+                  <TableCell className="font-semibold">{orderNo(o)}</TableCell>
                   <TableCell>{o.customerName}</TableCell>
-                  <TableCell className="max-w-[14rem] truncate text-muted-foreground">{o.items.map((i) => `${i.qty}× ${i.name}`).join(", ")}</TableCell>
+                  <TableCell className="max-w-[14rem] truncate text-muted-foreground">{Object.values(o.items).map((i) => `${i.qty}× ${i.name}`).join(", ")}</TableCell>
                   <TableCell className="whitespace-nowrap text-muted-foreground">{formatDateTime(o.createdAt)}</TableCell>
                   <TableCell>{o.paymentMethod}</TableCell>
                   <TableCell className="text-right font-semibold">{peso(o.total)}</TableCell>
@@ -104,18 +105,18 @@ export default function AdminOrders() {
           {selected && (
             <>
               <DialogHeader>
-                <DialogTitle>{selected.id}</DialogTitle>
+                <DialogTitle>{orderNo(selected)}</DialogTitle>
                 <DialogDescription>{selected.customerName} · {formatDateTime(selected.createdAt)} · {selected.paymentMethod}</DialogDescription>
               </DialogHeader>
               <StatusBadge status={selected.status} />
               <div className="space-y-1 rounded-xl bg-muted p-3 text-sm">
-                {selected.items.map((i) => <div key={i.menuItemId} className="flex justify-between"><span>{i.qty} × {i.name}</span><span>{peso(i.qty * i.price)}</span></div>)}
+                {Object.values(selected.items).map((i) => <div key={i.menuItemId} className="flex justify-between"><span>{i.qty} × {i.name}</span><span>{peso(i.qty * i.price)}</span></div>)}
                 <div className="mt-2 flex justify-between border-t pt-2 font-bold"><span>Total</span><span>{peso(selected.total)}</span></div>
               </div>
               {selected.note && <p className="text-sm"><b>Note:</b> {selected.note}</p>}
               <DialogFooter>
                 {(selected.status === "pending" || selected.status === "preparing") && (
-                  <Button variant="destructive" onClick={() => { if (confirm(`Cancel ${selected.id}? This can't be undone.`)) { updateOrderStatus(selected.id, "cancelled"); toast.success(`${selected.id} cancelled`) } }}>
+                  <Button variant="destructive" onClick={() => { if (confirm(`Cancel ${orderNo(selected)}? This can't be undone.`)) { updateOrderStatus(selected.id, "cancelled"); toast.success(`${orderNo(selected)} cancelled`) } }}>
                     Cancel order
                   </Button>
                 )}

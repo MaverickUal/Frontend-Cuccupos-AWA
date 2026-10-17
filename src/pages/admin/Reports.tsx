@@ -3,40 +3,16 @@ import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxi
 import { Download, Printer } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { RangePicker, defaultSelection, useRange, type RangeSelection } from "@/components/RangePicker"
 import { useStore } from "@/store/AppStore"
-import { formatDateTime, peso } from "@/lib/format"
-import { byCategory, byPayment, startOfDay, sumTotal, topItems, validOrders } from "@/lib/stats"
-
-type Range = "today" | "7d" | "30d" | "all"
-const RANGES: { value: Range; label: string }[] = [
-  { value: "today", label: "Today" },
-  { value: "7d", label: "Last 7 days" },
-  { value: "30d", label: "Last 30 days" },
-  { value: "all", label: "All time" },
-]
-
-function cutoff(range: Range): Date | null {
-  const today = startOfDay(new Date())
-  if (range === "today") return today
-  if (range === "7d" || range === "30d") {
-    const d = new Date(today)
-    d.setDate(today.getDate() - (range === "7d" ? 6 : 29))
-    return d
-  }
-  return null
-}
-
-const dayKey = (iso: string) => {
-  const d = new Date(iso)
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
-}
+import { formatDateTime, orderNo, peso } from "@/lib/format"
+import { byCategory, inRange, seriesFor, sumTotal, topItems, validOrders } from "@/lib/stats"
 
 function downloadCsv(filename: string, rows: (string | number)[][]) {
   const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`
   const csv = rows.map((r) => r.map(esc).join(",")).join("\n")
-  const url = URL.createObjectURL(new Blob(["\ufeff" + csv], { type: "text/csv;charset=utf-8;" }))
+  const url = URL.createObjectURL(new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" }))
   const a = document.createElement("a")
   a.href = url
   a.download = filename
@@ -52,50 +28,50 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 export default function Reports() {
   const { orders } = useStore()
-  const [range, setRange] = useState<Range>("7d")
-  const rangeLabel = RANGES.find((r) => r.value === range)!.label
+  const [sel, setSel] = useState<RangeSelection>(defaultSelection)
+  const range = useRange(sel)
 
   const r = useMemo(() => {
-    const from = cutoff(range)
-    const inRange = orders.filter((o) => !from || new Date(o.createdAt) >= from)
-    const sales = validOrders(inRange)
-    const days = new Map<string, { key: string; label: string; orders: number; revenue: number }>()
-    sales.forEach((o) => {
-      const k = dayKey(o.createdAt)
-      const row = days.get(k) ?? { key: k, label: new Date(o.createdAt).toLocaleDateString("en-PH", { month: "short", day: "numeric" }), orders: 0, revenue: 0 }
-      row.orders += 1
-      row.revenue += o.total
-      days.set(k, row)
-    })
+    const scoped = inRange(orders, range)
+    const sales = validOrders(scoped)
     const gross = sumTotal(sales)
     return {
-      inRange, sales, gross,
-      cancelled: inRange.length - sales.length,
-      itemsSold: sales.reduce((s, o) => s + o.items.reduce((n, i) => n + i.qty, 0), 0),
+      inRange: scoped,
+      sales,
+      gross,
+      cancelled: scoped.length - sales.length,
+      itemsSold: sales.reduce((s, o) => s + Object.values(o.items).reduce((n, i) => n + i.qty, 0), 0),
       avg: sales.length ? gross / sales.length : 0,
-      days: [...days.values()].sort((a, b) => a.key.localeCompare(b.key)),
+      cash: sales.reduce((s, o) => s + (o.cashTendered ?? o.total), 0),
+      change: sales.reduce((s, o) => s + (o.changeGiven ?? 0), 0),
+      series: seriesFor(orders, range),
       categories: byCategory(sales),
       items: topItems(sales, 10),
-      payments: byPayment(sales),
     }
   }, [orders, range])
 
   function exportCsv() {
-    downloadCsv(`cuccupos-orders-${range}.csv`, [
-      ["Order ID", "Date", "Customer", "Items", "Total (PHP)", "Payment", "Status"],
-      ...r.inRange.map((o) => [o.id, new Date(o.createdAt).toLocaleString("en-PH"), o.customerName, o.items.map((i) => `${i.qty}x ${i.name}`).join("; "), o.total, o.paymentMethod, o.status]),
+    downloadCsv(`cuccupos-orders-${range.preset}.csv`, [
+      ["Order ID", "Date", "Cashier", "Items", "Total (PHP)", "Cash Tendered (PHP)", "Change (PHP)", "Status"],
+      ...r.inRange.map((o) => [
+        orderNo(o),
+        new Date(o.createdAt).toLocaleString("en-PH"),
+        o.customerName,
+        Object.values(o.items).map((i) => `${i.qty}x ${i.name}`).join("; "),
+        o.total,
+        o.cashTendered ?? "",
+        o.changeGiven ?? "",
+        o.status,
+      ]),
     ])
   }
+
+  const chartTitle = range.hourly ? "Sales by hour" : range.label === "Last 7 days" || range.label === "Last 30 days" ? "Daily sales" : `Sales · ${range.label}`
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3 print:hidden">
-        <div className="w-44">
-          <Select value={range} onValueChange={(v) => setRange(v as Range)}>
-            <SelectTrigger aria-label="Report period"><SelectValue /></SelectTrigger>
-            <SelectContent>{RANGES.map((x) => <SelectItem key={x.value} value={x.value}>{x.label}</SelectItem>)}</SelectContent>
-          </Select>
-        </div>
+        <RangePicker value={sel} onChange={setSel} idPrefix="report" />
         <div className="flex gap-2">
           <Button variant="outline" onClick={exportCsv} disabled={r.inRange.length === 0}><Download /> Export CSV</Button>
           <Button onClick={() => window.print()}><Printer /> Print / Save as PDF</Button>
@@ -104,7 +80,7 @@ export default function Reports() {
 
       <div className="hidden print:block">
         <h1 className="text-2xl font-bold">CuccuPOS Sales Report</h1>
-        <p className="text-sm">{rangeLabel} · Generated {formatDateTime(new Date().toISOString())}</p>
+        <p className="text-sm">{range.label} · Generated {formatDateTime(new Date().toISOString())}</p>
       </div>
 
       {r.inRange.length === 0 ? (
@@ -120,15 +96,22 @@ export default function Reports() {
           </div>
 
           <Card className="break-inside-avoid">
-            <CardHeader><CardTitle>Daily sales</CardTitle></CardHeader>
+            <CardHeader><CardTitle>{chartTitle}</CardTitle></CardHeader>
             <CardContent>
               <div className="h-60">
                 <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={r.days} margin={{ left: 0, right: 8 }}>
+                  <BarChart data={r.series} margin={{ left: 0, right: 8 }}>
                     <CartesianGrid stroke="hsl(66 15% 82%)" vertical={false} />
-                    <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={12} />
+                    <XAxis dataKey="label" tickLine={false} axisLine={false} fontSize={12} interval="preserveStartEnd" />
                     <YAxis tickLine={false} axisLine={false} fontSize={12} width={48} tickFormatter={(v) => `₱${v}`} />
-                    <Tooltip formatter={(v) => [peso(Number(v)), "Sales"]} cursor={{ fill: "hsl(66 25% 88%)" }} />
+                    <Tooltip
+                      cursor={{ fill: "hsl(66 25% 88%)" }}
+                      formatter={(v) => [peso(Number(v)), "Sales"]}
+                      labelFormatter={(_l, p: any) => {
+                        const point = p?.[0]?.payload
+                        return point ? `${formatDateTime(point.from.toISOString())} – ${formatDateTime(point.to.toISOString())}` : ""
+                      }}
+                    />
                     <Bar dataKey="revenue" fill="hsl(69 28% 35%)" radius={[6, 6, 0, 0]} isAnimationActive={false} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -136,10 +119,25 @@ export default function Reports() {
             </CardContent>
           </Card>
 
+          <Card className="break-inside-avoid">
+            <CardHeader><CardTitle>Cash summary</CardTitle></CardHeader>
+            <CardContent className="px-0 pb-2">
+              <Table>
+                <TableHeader><TableRow><TableHead>Measure</TableHead><TableHead className="text-right">Amount</TableHead></TableRow></TableHeader>
+                <TableBody>
+                  <TableRow><TableCell className="font-semibold">Sales collected (cash)</TableCell><TableCell className="text-right font-semibold">{peso(r.cash)}</TableCell></TableRow>
+                  <TableRow><TableCell className="font-semibold">Less change given out</TableCell><TableCell className="text-right font-semibold">{peso(r.change)}</TableCell></TableRow>
+                  <TableRow><TableCell className="font-semibold">Net in drawer</TableCell><TableCell className="text-right font-bold">{peso(r.cash - r.change)}</TableCell></TableRow>
+                </TableBody>
+              </Table>
+            </CardContent>
+          </Card>
+
           <div className="grid gap-4 lg:grid-cols-2">
             <Card className="break-inside-avoid">
               <CardHeader><CardTitle>Sales by category</CardTitle></CardHeader>
               <CardContent className="space-y-3">
+                {r.categories.length === 0 && <p className="text-sm text-muted-foreground">No sales in this period.</p>}
                 {r.categories.map((c) => {
                   const pct = r.gross ? (c.revenue / r.gross) * 100 : 0
                   return (
@@ -153,18 +151,6 @@ export default function Reports() {
             </Card>
 
             <Card className="break-inside-avoid">
-              <CardHeader><CardTitle>Payment methods</CardTitle></CardHeader>
-              <CardContent className="px-0 pb-2">
-                <Table>
-                  <TableHeader><TableRow><TableHead>Method</TableHead><TableHead className="text-right">Orders</TableHead><TableHead className="text-right">Sales</TableHead></TableRow></TableHeader>
-                  <TableBody>{r.payments.map((p) => <TableRow key={p.method}><TableCell className="font-semibold">{p.method}</TableCell><TableCell className="text-right">{p.orders}</TableCell><TableCell className="text-right">{peso(p.revenue)}</TableCell></TableRow>)}</TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card className="break-inside-avoid">
               <CardHeader><CardTitle>Top items</CardTitle></CardHeader>
               <CardContent className="px-0 pb-2">
                 <Table>
@@ -173,17 +159,19 @@ export default function Reports() {
                 </Table>
               </CardContent>
             </Card>
+          </div>
 
+          {!range.hourly && (
             <Card className="break-inside-avoid">
               <CardHeader><CardTitle>Sales by day</CardTitle></CardHeader>
               <CardContent className="px-0 pb-2">
                 <Table>
                   <TableHeader><TableRow><TableHead>Date</TableHead><TableHead className="text-right">Orders</TableHead><TableHead className="text-right">Sales</TableHead></TableRow></TableHeader>
-                  <TableBody>{[...r.days].reverse().map((d) => <TableRow key={d.key}><TableCell className="font-semibold">{d.label}</TableCell><TableCell className="text-right">{d.orders}</TableCell><TableCell className="text-right">{peso(d.revenue)}</TableCell></TableRow>)}</TableBody>
+                  <TableBody>{[...r.series].reverse().map((d) => <TableRow key={d.label}><TableCell className="font-semibold">{d.label}</TableCell><TableCell className="text-right">{d.orders}</TableCell><TableCell className="text-right">{peso(d.revenue)}</TableCell></TableRow>)}</TableBody>
                 </Table>
               </CardContent>
             </Card>
-          </div>
+          )}
         </>
       )}
     </div>
