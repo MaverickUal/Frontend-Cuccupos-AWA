@@ -228,7 +228,7 @@ function CheckoutDialog({
     // Mock payment delay, then place order via Firebase
     await new Promise((r) => setTimeout(r, 1400))
     const order = await placeOrder(tender.amount, note.trim() || undefined, discountType)
-    if (order) { setPlaced(order); setPhase("done") } else { setPhase("review"); toast.error("Your order is empty.") }
+    if (order) { setPlaced(order); setPhase("done") } else { setPhase("review"); toast.error("Order could not be placed. Please try again.") }
   }
 
   const exact = tender.sufficient && tender.change === 0

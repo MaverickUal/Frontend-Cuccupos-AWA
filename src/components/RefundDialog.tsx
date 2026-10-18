@@ -54,7 +54,7 @@ export function RefundDialog({
   async function submit() {
     setBusy(true)
     setError("")
-    const res = await refundOrder(order!.id, entered, reason.trim())
+    const res = await refundOrder(order!.id, entered, reason.trim(), order!.customerId)
     setBusy(false)
     if (!res.success) {
       setError(res.message)

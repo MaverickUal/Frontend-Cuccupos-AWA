@@ -12,6 +12,7 @@ import {
   getMenuItems,
   getOrders,
   getUsers,
+  subscribeUserProfile,
   onAuthChange,
   loginUser,
   registerUser,
@@ -62,7 +63,7 @@ interface Store {
   /** Client-side preview of the discount for the current cart. Never persisted directly. */
   previewDiscount: (type: DiscountType) => DiscountBreakdown
   /** Issues a refund through the backend. */
-  refundOrder: (orderId: string, amount: number, reason: string) => Promise<{ success: boolean; message: string }>
+  refundOrder: (orderId: string, amount: number, reason: string, customerId?: string) => Promise<{ success: boolean; message: string }>
   /** Enables/disables a cashier through the backend. */
   setCashierEnabled: (uid: string, enabled: boolean) => Promise<{ success: boolean; message: string }>
   /** Creates a cashier account through the backend. Always the cashier role. */
@@ -176,6 +177,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setCart([])
   }
 
+  // Honour the `disabled` flag on an already-signed-in session: if an
+  // administrator disables this account while it is in use, sign it out.
+  useEffect(() => {
+    if (!currentUser?.id) return
+    const unsub = subscribeUserProfile(currentUser.id, (profile) => {
+      if (profile && profile.disabled === true) {
+        toast.error("This account has been disabled. Ask the Owner/Manager to re-enable it.")
+        void logout()
+      }
+    })
+    return () => {
+      unsub?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id])
+
   const addToCart = (id: string) =>
     setCart((prev) => {
       const item = menu.find((m) => m.id === id)
@@ -263,6 +280,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setCart([])
       return result.data as Order
     }
+    toast.error(result.message || "Could not place the order. Please try again.")
     return null
   }
 
@@ -296,8 +314,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       type
     )
 
-  const refundOrder = async (orderId: string, amount: number, reason: string) =>
-    refundOrderAction(orderId, amount, reason)
+  const refundOrder = async (orderId: string, amount: number, reason: string, customerId?: string) =>
+    refundOrderAction(orderId, amount, reason, customerId)
 
   const setCashierEnabled = async (uid: string, enabled: boolean) =>
     setCashierEnabledAction(uid, enabled)

@@ -185,7 +185,7 @@ Guards live in `App.tsx`: `RequireRole`, `PublicOnly`, `RootRedirect`, all gated
 4. **Order numbers are client-generated** (`ORD-MVC26YJ9`, `makeDisplayId()`). A shared counter would need customers to write to `/counters`, which can't be made safe.
 5. **Money is recomputed, never trusted.** `orderSchema` re-derives subtotal, discount and total from the line items and rejects anything that doesn't reconcile. Change the maths in `discounts.ts`, not in the caller.
 6. **The discount rate is verified; the eligibility evidence is not.** `DISCOUNT_RATE = 0.2` matches RA 10754 Sec. 32(a)(1) (PWD) and RA 7432 Sec. 5(a) as amended (Senior Citizen), both of which cover a coffee shop. The app does not record the ID proof the law requires to claim the discount as a tax deduction — see the header of `discounts.ts`.
-7. **Refunds and account management need Cloud Functions.** Client-side checks are advisory — anyone can call the RTDB SDK from devtools. Don't move them to `actions.ts`.
+7. **Refunds and cashier disabling now use the client SDK.** They run through `lib/actions.ts` and RTDB rules; Cloud Functions are optional. Client-side checks remain advisory.
 8. **The admin feed arrives grouped by cashier**, not chronologically. `sortByCreatedAtDesc` in the store is what fixes the ordering — don't assume `orders` is already sorted at the data layer.
 9. **`parseDayInput` rejects impossible dates deliberately.** Re-adding plain `new Date(y, m, d)` reintroduces the silent Feb 31 → Mar 3 bug.
 10. **The rules in the repo may be behind what's deployed.** Compare `database.rules.json` with the Firebase console before debugging an access error.
