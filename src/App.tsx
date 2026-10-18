@@ -5,7 +5,6 @@ import { AppShell } from "@/components/AppShell"
 import { useStore } from "@/store/AppStore"
 import type { Role } from "@/types"
 import Login from "@/pages/auth/Login"
-import Register from "@/pages/auth/Register"
 import OrderPage from "@/pages/customer/Order"
 import HistoryPage from "@/pages/customer/History"
 import Dashboard from "@/pages/admin/Dashboard"
@@ -56,7 +55,6 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
-      <Route path="/register" element={<PublicOnly><Register /></PublicOnly>} />
 
       <Route element={<RequireRole role="cashier"><AppShell variant="cashier" /></RequireRole>}>
         <Route path="/order" element={<OrderPage />} />

@@ -17,6 +17,7 @@ import {
   orderByChild,
   equalTo,
   limitToFirst,
+  runTransaction,
 } from "firebase/database"
 import {
   getAuth,
@@ -29,7 +30,7 @@ import { z } from "zod"
 import { computeDiscount } from "@/lib/discounts"
 import { findConflictingMenuItems } from "@/lib/duplicates"
 import type { MenuItem } from "@/types"
-import { requestRefund as refundOrderFn, createCashier as createCashierFn, setCashierEnabled as setCashierEnabledFn } from "@/lib/functionsClient"
+import { applyRefund } from "@/lib/refunds"
 
 // ---------------------------------------------------------------------------
 // Firebase initialization
@@ -672,6 +673,18 @@ export const getUsers = (callback: (users: any[]) => void) => {
 }
 
 /**
+ * Subscribe to a single user profile in real time.
+ * Used to honour the `disabled` flag on active sessions.
+ */
+export const subscribeUserProfile = (uid: string, callback: (profile: any | null) => void) => {
+  const r = ref(database, `users/${uid}`)
+  const unsubscribe = onValue(r, (snapshot) => {
+    callback(snapshot.exists() ? { id: uid, ...snapshot.val() } : null)
+  })
+  return unsubscribe
+}
+
+/**
  * Get all users once (get)
  */
 export const getUsersOnce = async () => {
@@ -731,39 +744,134 @@ export const deleteUser = async (id: string) => {
 }
 
 /**
- * Enable/disable a cashier.
+ * Enable/disable a cashier through the RTDB profile flag.
  *
- * Account removal goes through a Cloud Function because disabling an
- * Authentication account needs the Admin SDK, which cannot live in the browser.
- * On failure nothing is written, so the UI can report the real reason.
+ * This blocks access to CuccuPOS (login checks, active sessions and the
+ * security rules all honour `disabled`) but does NOT disable the underlying
+ * Firebase Authentication account, which must be managed separately in the
+ * Firebase Console if desired.
  */
 export const setCashierEnabled = async (uid: string, enabled: boolean) => {
-  const res = await setCashierEnabledFn(uid, enabled)
-  return res.ok
-    ? { success: true, message: enabled ? "Account re-enabled" : "Account disabled" }
-    : { success: false, message: res.error }
+  try {
+    const actor = auth.currentUser
+    if (!actor) return { success: false, message: "Sign in to continue." }
+    if (actor.uid === uid) return { success: false, message: "You cannot disable your own account." }
+
+    const actorSnap = await get(ref(database, `users/${actor.uid}`))
+    if (!actorSnap.exists() || actorSnap.val()?.role !== "admin") {
+      return { success: false, message: "Only an Owner/Manager can perform this action." }
+    }
+    if (actorSnap.val()?.disabled === true) {
+      return { success: false, message: "This account is disabled." }
+    }
+
+    const targetSnap = await get(ref(database, `users/${uid}`))
+    if (!targetSnap.exists()) return { success: false, message: "That account no longer exists." }
+    if (targetSnap.val()?.role === "admin") {
+      return { success: false, message: "This account is an Owner/Manager. Use a dedicated administrator flow for those." }
+    }
+
+    await update(ref(database, `users/${uid}`), {
+      disabled: enabled,
+      reenabledAt: enabled ? new Date().toISOString() : null,
+    })
+    return { success: true, message: enabled ? "Account re-enabled" : "Account disabled" }
+  } catch (error: any) {
+    return { success: false, message: error?.message || "Could not update the account." }
+  }
 }
 
 /**
- * Create a cashier account via the backend. Always the `cashier` role.
+ * Cashier accounts are no longer created through a Cloud Function.
+ *
+ * New cashiers self-register at `/register` (which always writes the `cashier`
+ * role through the security rules). An Owner/Manager who needs to provision an
+ * account directly can do so manually in the Firebase Console: create the
+ * Authentication user, then create the matching `/users/<uid>` profile with
+ * `role: "cashier"`. See `MANUAL_SETUP_AND_DEPLOYMENT.md`.
  */
-export const createCashierAccount = async (name: string, email: string, password: string) => {
-  const res = await createCashierFn({ name, email, password })
-  return res.ok
-    ? { success: true, message: `Cashier ${res.data.name} created`, data: res.data }
-    : { success: false, message: res.error }
+export const createCashierAccount = async (_name: string, _email: string, _password: string) => ({
+  success: false,
+  message:
+    "Automatic cashier creation is disabled. Ask the cashier to register at /register, or create the account manually in the Firebase Console.",
+})
+
+/**
+ * Locate the (customerId, order) pair for an order id. Admins can read the whole
+ * tree; cashiers never reach this path because refunds are admin-only.
+ */
+async function locateOrder(orderId: string, customerId?: string | null): Promise<{ customerId: string } | null> {
+  if (customerId) {
+    const snap = await get(ref(database, `orders/${customerId}/${orderId}`))
+    if (snap.exists()) return { customerId }
+    return null
+  }
+  const snap = await get(ref(database, "orders"))
+  const byCustomer = (snap.val() ?? {}) as Record<string, Record<string, any>>
+  for (const [cid, bucket] of Object.entries(byCustomer)) {
+    if (bucket && bucket[orderId]) return { customerId: cid }
+  }
+  return null
 }
 
 /**
- * Refunds go through a Cloud Function: the remaining-amount check must be atomic
- * and `approvedBy` must come from the verified session. A refund row therefore
- * exists only once the cash has actually been handed back.
+ * Issue a refund through an RTDB transaction on the individual order record.
+ *
+ * The remaining-amount check runs inside the transaction so two concurrent
+ * refunds can never both pass. `approvedBy` is taken from the signed-in session,
+ * not from caller input. The original order fields are preserved; only the
+ * refund audit record and the cached `refundedTotal` are appended/updated.
+ *
+ * Success is reported only after Firebase acknowledges the write.
  */
-export const refundOrder = async (orderId: string, amount: number, reason: string) => {
-  const res = await refundOrderFn(orderId, amount, reason)
-  return res.ok
-    ? { success: true, message: "Refund recorded", data: res.data }
-    : { success: false, message: res.error }
+export const refundOrder = async (
+  orderId: string,
+  amount: number,
+  reason: string,
+  customerId?: string | null
+) => {
+  try {
+    if (!orderId?.trim()) return { success: false, message: "Order id is required." }
+    if (!reason || reason.trim().length < 3) {
+      return { success: false, message: "A refund reason of at least 3 characters is required." }
+    }
+    const requested = Math.round(Number(amount) * 100) / 100
+    if (!Number.isFinite(requested) || requested <= 0) {
+      return { success: false, message: "Refund amount must be greater than zero." }
+    }
+
+    const user = auth.currentUser
+    if (!user) return { success: false, message: "Sign in to continue." }
+
+    const profileSnap = await get(ref(database, `users/${user.uid}`))
+    if (!profileSnap.exists()) return { success: false, message: "No user profile found for this session." }
+    const profile = profileSnap.val()
+    if (profile?.role !== "admin") return { success: false, message: "Only an Owner/Manager can perform this action." }
+    if (profile?.disabled === true) return { success: false, message: "This account is disabled." }
+
+    const located = await locateOrder(orderId, customerId)
+    if (!located) return { success: false, message: "Order not found." }
+    const { customerId: cid } = located
+    const orderRef = ref(database, `orders/${cid}/${orderId}`)
+
+    const approvedBy = { uid: user.uid, name: String(profile?.name ?? "") }
+    const result = await runTransaction(
+      orderRef,
+      (current: any) => {
+        if (!current) return current
+        const updated = applyRefund(current as any, { amount: requested, reason }, approvedBy)
+        return { ...current, ...updated, id: current.id ?? orderId }
+      },
+      { applyLocally: false }
+    )
+
+    if (!result.committed) {
+      return { success: false, message: "Refund could not be applied. Please try again." }
+    }
+    return { success: true, message: "Refund recorded", data: { orderId, amount: requested } }
+  } catch (error: any) {
+    return { success: false, message: error?.message || "Refund failed." }
+  }
 }
 
 // ===========================================================================

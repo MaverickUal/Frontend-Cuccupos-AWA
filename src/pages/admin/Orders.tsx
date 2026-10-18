@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Search, Undo2, Receipt } from "lucide-react"
 import { toast } from "sonner"
 import { Button } from "@/components/ui/button"
@@ -33,6 +33,7 @@ export default function AdminOrders() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [refundOpen, setRefundOpen] = useState(false)
   const [receiptOpen, setReceiptOpen] = useState(false)
+  const [visible, setVisible] = useState(CAP)
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: orders.length }
@@ -50,6 +51,10 @@ export default function AdminOrders() {
         (!q || orderNo(o).toLowerCase().includes(q) || o.customerName.toLowerCase().includes(q))
     )
   }, [orders, filter, search])
+
+  useEffect(() => {
+    setVisible(CAP)
+  }, [filter, search])
 
   const selected = orders.find((o) => o.id === selectedId) ?? null
 
@@ -91,7 +96,7 @@ export default function AdminOrders() {
           </TableHeader>
           <TableBody>
             {rows.length === 0 && <TableRow><TableCell colSpan={8} className="py-12 text-center text-muted-foreground">No orders match these filters.</TableCell></TableRow>}
-            {rows.slice(0, CAP).map((o) => {
+            {rows.slice(0, visible).map((o) => {
               const next = NEXT[o.status]
               return (
                 <TableRow key={o.id}>
@@ -118,9 +123,16 @@ export default function AdminOrders() {
         but older orders beyond the cap still exist. Search by order number or
         cashier to reach them.
       */}
-      {rows.length > CAP && (
+      {rows.length > visible && (
+        <div className="flex justify-center">
+          <Button variant="outline" size="sm" onClick={() => setVisible((v) => v + CAP)}>
+            Load more ({rows.length - visible} remaining)
+          </Button>
+        </div>
+      )}
+      {rows.length > CAP && visible >= rows.length && (
         <p className="text-center text-xs text-muted-foreground">
-          Showing the {CAP} most recent of {rows.length} matching orders. Refine your search to see others.
+          Showing all {rows.length} matching orders.
         </p>
       )}
 

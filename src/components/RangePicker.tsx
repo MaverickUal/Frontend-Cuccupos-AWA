@@ -78,7 +78,12 @@ export function RangePicker({
               type="date"
               max={toDayInput(today)}
               value={value.from}
-              onChange={(e) => onChange({ ...value, from: e.target.value })}
+              onChange={(e) => {
+                const nextFrom = e.target.value
+                // Never let "From" move past "To": push "To" forward with it.
+                const nextTo = value.to && nextFrom && nextFrom > value.to ? nextFrom : value.to
+                onChange({ ...value, from: nextFrom, to: nextTo })
+              }}
               className="w-[9.5rem]"
             />
           </div>
@@ -89,7 +94,12 @@ export function RangePicker({
               type="date"
               max={toDayInput(today)}
               value={value.to}
-              onChange={(e) => onChange({ ...value, to: e.target.value })}
+              onChange={(e) => {
+                const nextTo = e.target.value
+                // Never let "To" move before "From": pull "From" back with it.
+                const nextFrom = value.from && nextTo && nextTo < value.from ? nextTo : value.from
+                onChange({ ...value, from: nextFrom, to: nextTo })
+              }}
               className="w-[9.5rem]"
             />
           </div>

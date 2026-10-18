@@ -72,7 +72,8 @@ balance, requires a reason, and asks for confirmation. Refunds cannot exceed wha
 was paid, duplicates are rejected, and the original order is never deleted.
 
 Refunds are recorded **only after cash has actually been handed back** — the
-write happens in a Cloud Function transaction, not optimistically in the UI.
+write happens in a client SDK transaction on the order record, not optimistically
+in the UI. Authorized Owner/Manager only.
 
 ---
 
@@ -191,9 +192,9 @@ Stated plainly rather than buried:
 
 2. **Discount entitlement is not evidenced.** The 20% rate is now verified against RA 10754 Sec. 32(a)(1) and RA 7432 Sec. 5(a) as amended. What is missing is proof: the law requires the concession holder's name, ID number and TIN on the sales record before the discount can be claimed as a tax deduction, and the app stores only the discount type. The owner must decide whether to capture ID details — that is a privacy decision, not a code default. See `src/lib/discounts.ts`.
 
-3. **Cloud Functions are written but not deployed.** Refunds and cashier account management exist and compile, but are inert until `npm run deploy:functions` runs. Until then the UI reports the feature as unavailable rather than simulating it.
+3. **Cloud Functions are optional.** Refunds and cashier disabling now run through the Firebase client SDK and RTDB rules. The functions in `functions/` may remain unused or be removed; they are not a prerequisite.
 
-4. **An admin can still demote themselves.** The rules stop a cashier self-promoting and the account-management function refuses self-disabling, but an admin editing their own `role` directly is allowed by the rules. There is no UI that does it, so it only matters if someone edits the database by hand.
+4. **Admin self-demotion is blocked by rules.** An admin cannot change their own `role` (including self-demotion) via the database rules.><|end|><|start|>edit to=assistant<|channel|>analysis<|message|>Edited system_summary.md (1 replacement)
 
 5. **No integration or emulator tests.** The pure logic is covered by 200 unit tests, but the Cloud Functions and the security rules are only verified by compiling and by manual browser checks against the live database.
 
@@ -212,7 +213,7 @@ places:
 
 | Source | Resulting role |
 |---|---|
-| Sign-up at `/register` | `cashier` |
+| Provisioned manually in Firebase Console | `cashier` |
 | Created by an Owner/Manager at `/admin/cashiers` | `cashier` |
 | Hand-edited in the Firebase console | `admin` — the only way to make an administrator |
 

@@ -29,9 +29,8 @@ interface Row {
 }
 
 export default function AdminCashiers() {
-  const { users, orders, currentUser, createCashier, setCashierEnabled } = useStore()
+  const { users, orders, currentUser, setCashierEnabled } = useStore()
   const [search, setSearch] = useState("")
-  const [createOpen, setCreateOpen] = useState(false)
 
   const rows = useMemo(() => {
     const map = new Map<string, Row>()
@@ -80,9 +79,9 @@ export default function AdminCashiers() {
             <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             <Input aria-label="Search cashiers" className="pl-9" placeholder="Search name or email…" value={search} onChange={(e) => setSearch(e.target.value)} />
           </div>
-          <Button onClick={() => setCreateOpen(true)}>
-            <UserPlus /> Add cashier
-          </Button>
+          <span className="text-xs text-muted-foreground">
+            Cashier accounts are provisioned manually in the Firebase Console. See MANUAL_SETUP_AND_DEPLOYMENT.md.
+          </span>
         </div>
       </div>
 
@@ -153,7 +152,9 @@ export default function AdminCashiers() {
         the Firebase console, not from this screen.
       </p>
 
-      <CreateCashierDialog open={createOpen} onOpenChange={setCreateOpen} onCreate={createCashier} />
+      <p className="text-xs text-muted-foreground">
+        Disabling uses the RTDB profile flag only. It blocks access to CuccuPOS but does not disable the underlying Firebase Authentication account.
+      </p>
     </div>
   )
 }
